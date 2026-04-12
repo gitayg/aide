@@ -2800,15 +2800,41 @@ class AIDEWindow(QMainWindow):
         self._term_splitter=QSplitter(Qt.Orientation.Horizontal)
         self._term_splitter.setHandleWidth(2)
         self._term_splitter.setStyleSheet(f"QSplitter::handle{{background:{C_SURFACE.name()};}}")
+
+        # ── Main pane: header + terminal ──────────────────────────────────────
+        self._main_pane=QWidget(); self._main_pane.setStyleSheet("background:transparent;")
+        _mp_lay=QVBoxLayout(self._main_pane); _mp_lay.setContentsMargins(0,0,0,0); _mp_lay.setSpacing(0)
+        self._main_header=QLabel()
+        self._main_header.setFixedHeight(22)
+        self._main_header.setStyleSheet(
+            f"background:{C_SURFACE.name()};color:{C_MUTED.name()};"
+            f"font-size:11px;font-family:'JetBrains Mono',monospace;"
+            f"padding:0 8px;border-bottom:1px solid #30363d;")
+        self._main_header.setVisible(False)
+        _mp_lay.addWidget(self._main_header)
         self._main_terminal=TerminalWidget()
         self._main_terminal.prefix_action.connect(self._dispatch_action)
         self._main_terminal.split_tab_paste.connect(self._split_paste_to_secondary)
-        self._term_splitter.addWidget(self._main_terminal)
+        _mp_lay.addWidget(self._main_terminal,1)
+        self._term_splitter.addWidget(self._main_pane)
+
+        # ── Secondary pane: header + terminal ─────────────────────────────────
         self._split_panel=QStackedWidget(); self._split_panel.setVisible(False)
+        self._secondary_pane=QWidget(); self._secondary_pane.setStyleSheet("background:transparent;")
+        _sp_lay=QVBoxLayout(self._secondary_pane); _sp_lay.setContentsMargins(0,0,0,0); _sp_lay.setSpacing(0)
+        self._secondary_header=QLabel()
+        self._secondary_header.setFixedHeight(22)
+        self._secondary_header.setStyleSheet(
+            f"background:{C_SURFACE.name()};color:{C_MUTED.name()};"
+            f"font-size:11px;font-family:'JetBrains Mono',monospace;"
+            f"padding:0 8px;border-bottom:1px solid #30363d;")
+        _sp_lay.addWidget(self._secondary_header)
         self._secondary_terminal=TerminalWidget()
         self._secondary_terminal.prefix_action.connect(self._dispatch_action)
         self._secondary_terminal.split_tab_paste.connect(self._split_paste_to_main)
-        self._split_panel.addWidget(self._secondary_terminal)
+        _sp_lay.addWidget(self._secondary_terminal,1)
+        self._split_panel.addWidget(self._secondary_pane)
+
         # per-tab browsers are lazily created in _get_or_create_browser()
         self._term_splitter.addWidget(self._split_panel)
         tv.addWidget(self._term_splitter,1)
@@ -2911,7 +2937,7 @@ class AIDEWindow(QMainWindow):
                 self._secondary_id=self._create_secondary()
             else:
                 self._secondary_terminal.set_session(self.sessions[self._secondary_id])
-            self._split_panel.setCurrentWidget(self._secondary_terminal); self._split_panel.setVisible(True)
+            self._split_panel.setCurrentWidget(self._secondary_pane); self._split_panel.setVisible(True)
             total=self._term_splitter.width()
             self._term_splitter.setSizes([total//2,total//2])
             # Show the one-time Tab-to-paste tip
@@ -2930,6 +2956,7 @@ class AIDEWindow(QMainWindow):
                 if url: bp.navigate(url)
         self._hotkey_bar.set_btn_active("split_browse", self._split_mode=="browse")
         self._hotkey_bar.set_btn_active("split_term",   self._split_mode=="terminal")
+        self._update_split_headers()
         self._update_status()
 
     def _create_secondary(self)->int:
@@ -2937,6 +2964,20 @@ class AIDEWindow(QMainWindow):
         self.sessions[tid]=s; s.start(self.config.shell or DEFAULT_SHELL,self.config.env_overrides)
         self._tab_bar.add_card(s,self.config.card)
         self._secondary_terminal.set_session(s); return tid
+
+    def _update_split_headers(self):
+        """Show/update the name labels above each pane in terminal split mode."""
+        active = self._split_mode == "terminal"
+        self._main_header.setVisible(active)
+        if not active:
+            return
+        def _label(session):
+            if not session: return "—"
+            icon = "🤖" if (getattr(session,"claude_thinking",False) or getattr(session,"claude_working",False)) else ""
+            title = session.effective_title()
+            return f"  {icon + ' ' if icon else ''}{title}"
+        self._main_header.setText(_label(self._main_terminal.session))
+        self._secondary_header.setText(_label(self._secondary_terminal.session))
 
     def _split_paste_to_secondary(self, text: str):
         """Tab-paste: main → secondary."""
@@ -3015,6 +3056,7 @@ class AIDEWindow(QMainWindow):
                 card._gear_tick=getattr(card,"_gear_tick",0)+1
             self._tab_bar.refresh_card(tid)
         self._update_waiting_badge()
+        self._update_split_headers()
         s=self.sessions.get(self.active_id)
         if s:
             full=s.info.cwd_full or s.info.cwd
