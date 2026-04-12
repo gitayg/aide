@@ -1585,7 +1585,13 @@ class TabCard(QFrame):
         self._lbl0.setStyleSheet(
             f"color:{(C_ACCENT if a else C_FG).name()};font-weight:bold;font-size:12px;")
 
+    def mark_kbd_focus(self, focused: bool):
+        """Highlight this card as the keyboard-navigation cursor."""
+        self._kbd_focus = focused
+        self._apply_style()
+
     def _apply_style(self):
+        kbd = getattr(self, "_kbd_focus", False)
         wb=f"border-right:3px solid {C_WARN.name()};" if self.session.watching else ""
         waiting=getattr(self.session,"waiting_input",False)
         thinking=getattr(self.session,"claude_thinking",False)
@@ -1602,6 +1608,9 @@ class TabCard(QFrame):
             bb="border-bottom:1px solid #21262d;"
         if self._active:
             self.setStyleSheet(f"QFrame{{background:#1f2d3d;border-left:3px solid {C_ACCENT.name()};{bb}{wb}{tb}}}")
+        elif kbd:
+            # Keyboard focus: white/muted outline to distinguish from active (blue)
+            self.setStyleSheet(f"QFrame{{background:{C_SURFACE.name()};border-left:3px solid {C_MUTED.name()};{bb}{wb}{tb}}}")
         else:
             self.setStyleSheet(f"QFrame{{background:{C_PANEL.name()};{bb}{wb}{tb}}}QFrame:hover{{background:{C_SURFACE.name()};}}")
 
@@ -1671,6 +1680,7 @@ class TabBar(QWidget):
     def __init__(self,parent=None):
         super().__init__(parent); self.setFixedWidth(220)
         self.setStyleSheet(f"background:{C_PANEL.name()};")
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         ml=QVBoxLayout(self); ml.setContentsMargins(0,0,0,0); ml.setSpacing(0)
         self._scroll=QScrollArea(); self._scroll.setWidgetResizable(True)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -1682,9 +1692,10 @@ class TabBar(QWidget):
         btn.setStyleSheet(f"QPushButton{{background:{C_SURFACE.name()};color:{C_MUTED.name()};border:none;font-size:12px;text-align:left;padding-left:12px;}}QPushButton:hover{{background:{C_ACCENT.name()}22;color:{C_ACCENT.name()};}}")
         btn.clicked.connect(self.new_tab_clicked); ml.addWidget(btn)
         self._card_map:Dict[int,TabCard]={}
+        self._kbd_idx:int=-1  # index of keyboard-focused card (-1 = none)
 
     def add_card(self,s:TermSession,cfg:CardConfig)->TabCard:
-        card=TabCard(s,cfg); card.clicked_signal.connect(self.tab_selected)
+        card=TabCard(s,cfg); card.clicked_signal.connect(self._on_card_clicked)
         card.rename_requested.connect(self.rename_requested)
         card.close_requested.connect(self.close_requested)
         card.reorder_requested.connect(self._handle_reorder)
@@ -1696,6 +1707,75 @@ class TabBar(QWidget):
 
     def set_active(self,tid:int):
         for t,c in self._card_map.items(): c.mark_active(t==tid)
+
+    # ── keyboard navigation ────────────────────────────────────────────────────
+    def _cards(self) -> list:
+        """Return TabCard widgets in layout order."""
+        out = []
+        for i in range(self._cl.count()):
+            item = self._cl.itemAt(i)
+            w = item.widget() if item else None
+            if isinstance(w, TabCard): out.append(w)
+        return out
+
+    def _set_kbd_focus(self, idx: int):
+        """Move the keyboard cursor to card at layout index idx."""
+        cards = self._cards()
+        if not cards: return
+        idx = max(0, min(idx, len(cards)-1))
+        # Clear previous
+        if 0 <= self._kbd_idx < len(cards):
+            cards[self._kbd_idx].mark_kbd_focus(False)
+        self._kbd_idx = idx
+        cards[idx].mark_kbd_focus(True)
+        # Scroll so focused card is visible
+        self._scroll.ensureWidgetVisible(cards[idx])
+
+    def _clear_kbd_focus(self):
+        for c in self._cards(): c.mark_kbd_focus(False)
+        self._kbd_idx = -1
+
+    def _on_card_clicked(self, tid: int):
+        """Card clicked — update kbd index to match and forward signal."""
+        cards = self._cards()
+        for i, c in enumerate(cards):
+            if c.session.tab_id == tid:
+                self._kbd_idx = i
+                break
+        self.tab_selected.emit(tid)
+
+    def mousePressEvent(self, e):
+        """Clicking anywhere in the sidebar gives it keyboard focus."""
+        self.setFocus()
+        super().mousePressEvent(e)
+
+    def focusOutEvent(self, e):
+        self._clear_kbd_focus()
+        super().focusOutEvent(e)
+
+    def keyPressEvent(self, e):
+        K = Qt.Key
+        cards = self._cards()
+        if not cards:
+            super().keyPressEvent(e); return
+        if e.key() == K.Key_Down:
+            if self._kbd_idx < 0:
+                self._set_kbd_focus(0)
+            else:
+                self._set_kbd_focus(self._kbd_idx + 1)
+        elif e.key() == K.Key_Up:
+            if self._kbd_idx < 0:
+                self._set_kbd_focus(len(cards)-1)
+            else:
+                self._set_kbd_focus(self._kbd_idx - 1)
+        elif e.key() in (K.Key_Return, K.Key_Enter):
+            if 0 <= self._kbd_idx < len(cards):
+                tid = cards[self._kbd_idx].session.tab_id
+                self.tab_selected.emit(tid)
+        elif e.key() == K.Key_Escape:
+            self._clear_kbd_focus()
+        else:
+            super().keyPressEvent(e)
 
     def refresh_card(self,tid:int):
         if c:=self._card_map.get(tid): c.refresh()
