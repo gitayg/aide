@@ -4,6 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>NanoAI — The AI-Developer Terminal</title>
+<!-- Favicon: glick.run brandmark — stylized G in terminal green -->
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230d1117'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='central' text-anchor='middle' font-family='monospace' font-weight='700' font-size='20' fill='%2358a6ff'%3E%E2%80%BA_%3C/text%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=IBM+Plex+Sans:wght@300;400;500&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
@@ -474,13 +476,41 @@
   .footer-links a { color: var(--muted); text-decoration: none; }
   .footer-links a:hover { color: var(--fg); }
 
+  /* ── STAR BUTTON ── */
+  .star-btn {
+    display: inline-flex; align-items: center; gap: 8px;
+  }
+  .star-icon { color: var(--amber); font-size: 15px; }
+  .star-badge {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 1px 8px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px; font-weight: 600;
+    color: var(--amber); min-width: 28px; text-align: center;
+    transition: color 0.3s;
+  }
+  .star-btn:hover .star-badge { color: var(--fg); border-color: var(--amber); }
+
+  /* ── STATS ROW ── */
+  .stats-row {
+    display: flex; gap: 16px; justify-content: center; flex-wrap: wrap;
+    animation: fadeSlideDown 0.6s 0.35s ease both;
+  }
+  .star-counter { cursor: pointer; text-decoration: none; }
+  .star-counter:hover { border-color: var(--amber); }
+  .star-inline-link {
+    color: var(--amber); text-decoration: none; font-size: 11px;
+    transition: color 0.2s;
+  }
+  .star-inline-link:hover { color: var(--fg); }
+
   /* ── DOWNLOAD COUNTER ── */
   .dl-counter {
     display: inline-flex; align-items: center; gap: 14px;
     background: var(--panel); border: 1px solid var(--border);
     border-radius: 10px; padding: 10px 20px;
     font-family: 'JetBrains Mono', monospace;
-    animation: fadeSlideDown 0.6s 0.35s ease both;
+    transition: border-color 0.2s;
   }
   .dl-counter-num {
     font-size: 26px; font-weight: 600; color: var(--accent);
@@ -575,15 +605,28 @@
 
   <div class="hero-actions">
     <a href="#download" class="btn-primary" id="dl-btn-hero" onclick="countDownload()">⬇ Download free</a>
-    <a href="https://github.com" class="btn-secondary">★ GitHub</a>
+    <a href="https://github.com/gitayg/nanoAI" class="btn-secondary star-btn" id="star-btn" target="_blank" rel="noopener">
+      <span class="star-icon">★</span> Star on GitHub
+      <span class="star-badge" id="star-count-hero">…</span>
+    </a>
   </div>
 
-  <div class="dl-counter" id="counter-hero" style="margin-bottom:48px;">
-    <div class="dl-counter-dot"></div>
-    <div class="dl-counter-num" id="count-hero">…</div>
-    <div class="dl-counter-label">
-      <strong>downloads</strong>
-      macOS · Apple Silicon &amp; Intel
+  <div class="stats-row" style="margin-bottom:48px;">
+    <div class="dl-counter" id="counter-hero">
+      <div class="dl-counter-dot"></div>
+      <div class="dl-counter-num" id="count-hero">…</div>
+      <div class="dl-counter-label">
+        <strong>downloads</strong>
+        macOS · Apple Silicon &amp; Intel
+      </div>
+    </div>
+    <div class="dl-counter star-counter" id="counter-stars">
+      <div class="dl-counter-dot" style="background:var(--amber);box-shadow:0 0 6px var(--amber);"></div>
+      <div class="dl-counter-num" id="count-stars">…</div>
+      <div class="dl-counter-label">
+        <strong>GitHub stars</strong>
+        <a href="https://github.com/gitayg/nanoAI" target="_blank" rel="noopener" class="star-inline-link">★ Give a star →</a>
+      </div>
     </div>
   </div>
 
@@ -921,16 +964,39 @@
       sum + rel.assets.reduce((s, a) => s + a.download_count, 0), 0);
   }
 
+  async function fetchGitHubStars(repo) {
+    const r = await fetch(`https://api.github.com/repos/${repo}`,
+      { headers: { Accept: 'application/vnd.github+json' } });
+    if (!r.ok) throw new Error('GitHub API error');
+    const data = await r.json();
+    return data.stargazers_count;
+  }
+
+  function setStars(n) {
+    const fmt = n => n.toLocaleString();
+    animateTo(document.getElementById('count-stars'), n);
+    const badge = document.getElementById('star-count-hero');
+    if (badge) badge.textContent = fmt(n);
+  }
+
   async function loadCounter() {
     let count = getLocalCount();
     if (GITHUB_REPO) {
       try {
         count = await fetchGitHubDownloads(GITHUB_REPO);
-        setLocalCount(count); // cache it
+        setLocalCount(count);
       } catch(e) {
-        // GitHub API failed — fall back to cached local count
-        console.warn('GitHub counter unavailable, using local count');
+        console.warn('GitHub download counter unavailable, using local count');
       }
+      try {
+        const stars = await fetchGitHubStars(GITHUB_REPO);
+        setStars(stars);
+      } catch(e) {
+        console.warn('GitHub stars unavailable');
+        setStars(0);
+      }
+    } else {
+      setStars(0);
     }
     setCount(count);
   }
