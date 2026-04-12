@@ -7,7 +7,7 @@
   ██║ ╚████║██║  ██║██║ ╚████║╚██████╔╝    ██║  ██║██║
   ╚═╝  ╚═══╝╚═╝  ╚═╝╚═╝  ╚═══╝ ╚═════╝     ╚═╝  ╚═╝╚═╝  v2.0
 
-  The AI-Developer Terminal  —  Native Desktop App
+  AIDE — AI Dev Env  —  Native Desktop App
 
   Install:  pip install PyQt6 pyte PyQt6-WebEngine
   Run:      python aiterm.py [--shell /bin/zsh] [--reset]
@@ -77,7 +77,7 @@ def _check_deps():
             else:
                 print(f"     Skipped — browser will use plain-text fallback.")
     if any_failed:
-        print("\n  Cannot start NanoAI — install required packages and retry.\n")
+        print("\n  Cannot start AIDE — install required packages and retry.\n")
         sys.exit(1)
 
 _check_deps()
@@ -108,7 +108,7 @@ except ImportError:
 # ═════════════════════════════════════════════════════════════════════════════
 
 VERSION      = "2.1.2"
-APP_NAME     = "NanoAI"
+APP_NAME     = "AIDE"
 
 # ── What's New ──────────────────────────────────────────────────────────────
 # Each entry: (emoji, short title, one-line description)
@@ -125,7 +125,7 @@ WHATS_NEW = [
     ("🔐", "SSH host detection",           "Improved: parses more terminal-title formats and OSC 7 remote hostnames"),
     ("📢", "What's New popup",             "This dialog — shown once after each update"),
 ]
-CONFIG_DIR   = Path.home() / ".nanoai"
+CONFIG_DIR   = Path.home() / ".aide"
 SESSION_FILE = CONFIG_DIR / "session.json"
 CONFIG_FILE  = CONFIG_DIR / "config.json"
 CLIP_FILE       = CONFIG_DIR / "clipboard.json"
@@ -372,7 +372,7 @@ def play_sound(cfg:NotifConfig):
             for _ in range(chunks):
                 winsound.Beep(880, 300)
         except Exception as e:
-            sys.stderr.write(f"[NanoAI] winsound failed: {e}\n")
+            sys.stderr.write(f"[AIDE] winsound failed: {e}\n")
         return
 
     cmd_str = cfg.sound_command or _auto_sound_cmd()
@@ -423,8 +423,8 @@ def play_sound(cfg:NotifConfig):
                 first_err = str(e); break
     finally:
         if first_err:
-            sys.stderr.write(f"[NanoAI] sound failed: {first_err}\n")
-            sys.stderr.write(f"[NanoAI] cmd: {' '.join(parts)}\n")
+            sys.stderr.write(f"[AIDE] sound failed: {first_err}\n")
+            sys.stderr.write(f"[AIDE] cmd: {' '.join(parts)}\n")
 
 # ═════════════════════════════════════════════════════════════════════════════
 # SHARED CLIPBOARD
@@ -478,8 +478,8 @@ class SecureVault:
           "data":     <fernet-encrypted JSON of {tab_id_str: {k: v, ...}}>
         }
     """
-    _VERIFIER_PLAINTEXT = b"nanoai-vault-v2"
-    KEYCHAIN_SERVICE = "com.itayglick.nanoai"
+    _VERIFIER_PLAINTEXT = b"aide-vault-v2"
+    KEYCHAIN_SERVICE = "com.itayglick.aide"
     KEYCHAIN_ACCOUNT = "vault-key"
 
     def __init__(self, path:Path=VAULT_FILE):
@@ -541,7 +541,7 @@ class SecureVault:
             # Corrupted or unreadable vault — log and start empty rather than
             # silently dropping data with no indication something went wrong.
             import sys
-            print(f"[NanoAI] WARNING: vault file unreadable ({e}), starting empty.", file=sys.stderr)
+            print(f"[AIDE] WARNING: vault file unreadable ({e}), starting empty.", file=sys.stderr)
             self._raw = {}
 
     def _write_raw(self):
@@ -549,7 +549,7 @@ class SecureVault:
             self._path.write_text(json.dumps(self._raw, indent=2))
         except OSError as e:
             import sys
-            print(f"[NanoAI] ERROR: cannot write vault file: {e}", file=sys.stderr)
+            print(f"[AIDE] ERROR: cannot write vault file: {e}", file=sys.stderr)
             return
         # Enforce restrictive permissions; warn if they can't be set.
         try:
@@ -557,10 +557,10 @@ class SecureVault:
             # Verify the chmod actually took effect.
             if self._path.stat().st_mode & 0o077:
                 import sys
-                print("[NanoAI] WARNING: vault file has insecure permissions!", file=sys.stderr)
+                print("[AIDE] WARNING: vault file has insecure permissions!", file=sys.stderr)
         except OSError as e:
             import sys
-            print(f"[NanoAI] WARNING: could not restrict vault permissions: {e}", file=sys.stderr)
+            print(f"[AIDE] WARNING: could not restrict vault permissions: {e}", file=sys.stderr)
 
     def _init_empty_file(self, f:Fernet):
         """Write a fresh, empty encrypted vault file using the given Fernet."""
@@ -1358,7 +1358,7 @@ class TerminalWidget(QWidget):
         if img.isNull():
             return None
         import tempfile
-        tmp_dir = Path(tempfile.gettempdir()) / "nanoai_images"
+        tmp_dir = Path(tempfile.gettempdir()) / "aide_images"
         # Create with restrictive permissions — only the current user can read.
         tmp_dir.mkdir(exist_ok=True, mode=0o700)
         try:
@@ -1489,7 +1489,7 @@ class TabCard(QFrame):
     close_requested=pyqtSignal(int)
     reorder_requested=pyqtSignal(int,int,bool)  # src_tab_id, target_tab_id, place_before
 
-    _MIME_TYPE="application/x-nanoai-tab"
+    _MIME_TYPE="application/x-aide-tab"
 
     def __init__(self,session:TermSession,cfg:CardConfig,parent=None):
         super().__init__(parent)
@@ -1808,7 +1808,7 @@ class AIInfoBar(QLabel):
     def _refresh(self):
         providers=detect_ai_providers()
         # No providers: hide the bar entirely so we don't waste a line on a
-        # plain "NanoAI" label (the title bar already shows the app name).
+        # plain "AIDE" label (the title bar already shows the app name).
         if not providers:
             self.setText(""); self.setVisible(False); return
         parts=["  ⚡  "]
@@ -2129,7 +2129,7 @@ class NotesPanel(QWidget):
         self._auto_cmd.setPlaceholderText("e.g. npm run dev")
         self._auto_cmd.setStyleSheet(_auto_edit_css)
         al.addWidget(self._auto_cmd)
-        hint=QLabel("Runs on next launch of NanoAI for this tab.")
+        hint=QLabel("Runs on next launch of AIDE for this tab.")
         hint.setStyleSheet(f"color:{C_MUTED.name()};font-size:10px;background:transparent;font-style:italic;")
         hint.setWordWrap(True); al.addWidget(hint)
         al.addStretch()
@@ -2258,7 +2258,7 @@ _BROWSE_SPLASH = """
 </style></head><body>
 <div class="card">
   <h2>Browser</h2>
-  <p>Type a URL in the bar above, or run a local dev server —<br>NanoAI will open it here automatically.</p>
+  <p>Type a URL in the bar above, or run a local dev server —<br>AIDE will open it here automatically.</p>
   <p><code>localhost:PORT</code> detected in terminal output triggers auto-navigate.</p>
 </div></body></html>
 """
@@ -2424,7 +2424,7 @@ class BrowsePane(QWidget):
         self._fetch_result.connect(self.set_content)
         def _do():
             try:
-                req = Request(url, headers={"User-Agent": f"NanoAI/{VERSION}"})
+                req = Request(url, headers={"User-Agent": f"AIDE/{VERSION}"})
                 with urlopen(req, timeout=8) as r:
                     ct  = r.headers.get("Content-Type", "")
                     raw = r.read().decode("utf-8", errors="replace")
@@ -2732,7 +2732,7 @@ class SettingsDialog(QDialog):
     def get_result(self)->Optional[dict]: return self._result
 
 
-class NanoAIWindow(QMainWindow):
+class AIDEWindow(QMainWindow):
     def __init__(self,shell:str=""):
         super().__init__()
         self.config=AppConfig.load()
@@ -2765,7 +2765,7 @@ class NanoAIWindow(QMainWindow):
         QTimer.singleShot(400, self._maybe_show_whats_new)
 
     def _build_ui(self):
-        self.setWindowTitle(f"{APP_NAME} {VERSION}  —  The AI-Developer Terminal")
+        self.setWindowTitle(f"{APP_NAME} {VERSION}  —  AI Dev Env")
         self.resize(1280,800)
         self.setStyleSheet(f"QMainWindow{{background:{C_BG.name()};}}QMenuBar{{background:{C_PANEL.name()};color:{C_FG.name()};border-bottom:1px solid {C_SURFACE.name()};}}QMenuBar::item:selected{{background:{C_SURFACE.name()};}}QMenu{{background:{C_SURFACE.name()};color:{C_FG.name()};border:1px solid {C_MUTED.name()};}}QMenu::item:selected{{background:{C_ACCENT.name()}44;color:{C_ACCENT.name()};}}")
         mb=self.menuBar()
@@ -3022,7 +3022,7 @@ class NanoAIWindow(QMainWindow):
 
     def _update_waiting_badge(self):
         count=sum(1 for s in self.sessions.values() if getattr(s,"waiting_input",False))
-        base=f"{APP_NAME}  —  The AI-Developer Terminal"
+        base=f"{APP_NAME}  —  AI Dev Env"
         self.setWindowTitle(f"[{count} waiting]  {base}" if count else base)
         try: QApplication.instance().setBadgeNumber(count)
         except: pass
@@ -3277,7 +3277,7 @@ class NanoAIWindow(QMainWindow):
                 "The vault file exists but could not be decrypted with the key "
                 "stored in your Keychain. This usually means the Keychain entry "
                 "was replaced or the file was copied from another machine.\n\n"
-                "Delete ~/.nanoai/vault.enc to start fresh (you will lose the "
+                "Delete ~/.aide/vault.enc to start fresh (you will lose the "
                 "previously stored variables).")
             return
         self._after_vault_unlocked()
@@ -3391,7 +3391,7 @@ def _dark_palette()->QPalette:
 
 if __name__ == "__main__":
     import argparse
-    parser=argparse.ArgumentParser(description=f"{APP_NAME} {VERSION} — The AI-Developer Terminal")
+    parser=argparse.ArgumentParser(description=f"{APP_NAME} {VERSION} — AI Dev Env")
     parser.add_argument("--shell",help="Shell to use (default: $SHELL)")
     parser.add_argument("--reset",action="store_true",help="Clear saved session")
     args=parser.parse_args()
@@ -3403,6 +3403,6 @@ if __name__ == "__main__":
     app.setApplicationDisplayName(APP_NAME)
     app.setStyle("Fusion")
     app.setPalette(_dark_palette())
-    win=NanoAIWindow(shell=args.shell or "")
+    win=AIDEWindow(shell=args.shell or "")
     win.show()
     sys.exit(app.exec())

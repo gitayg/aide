@@ -19,8 +19,14 @@ env/
 .LSOverride
 **/.DS_Store
 
-# App bundle (build artifact)
+# Build artifacts
 NanoAI.app/
+AIDE.app/
+*.dmg
+dist/
+build/
+NanoAI.spec
+AIDE.spec
 
 # Claude Code
 .claude/
