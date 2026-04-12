@@ -1,0 +1,988 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NanoAI — The AI-Developer Terminal</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=IBM+Plex+Sans:wght@300;400;500&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:       #0d1117;
+    --panel:    #161b22;
+    --surface:  #21262d;
+    --border:   #30363d;
+    --accent:   #58a6ff;
+    --accent2:  #79c0ff;
+    --muted:    #8b949e;
+    --fg:       #e6edf3;
+    --green:    #3fb950;
+    --amber:    #f0a500;
+    --orange:   #ff7b54;
+    --blue-dim: #1f6feb33;
+  }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: 'IBM Plex Sans', sans-serif;
+    font-size: 16px;
+    line-height: 1.6;
+    overflow-x: hidden;
+  }
+
+  /* ── Noise texture overlay ── */
+  body::before {
+    content: '';
+    position: fixed; inset: 0; z-index: 0;
+    pointer-events: none;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");
+    opacity: 0.4;
+  }
+
+  /* ── NAVBAR ── */
+  nav {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 48px;
+    height: 60px;
+    background: rgba(13,17,23,0.85);
+    backdrop-filter: blur(16px);
+    border-bottom: 1px solid var(--border);
+  }
+  .nav-logo {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 600; font-size: 15px;
+    color: var(--fg);
+    display: flex; align-items: center; gap: 8px;
+  }
+  .nav-logo span { color: var(--accent); }
+  .nav-links { display: flex; gap: 32px; }
+  .nav-links a {
+    color: var(--muted); text-decoration: none; font-size: 14px;
+    transition: color 0.2s;
+  }
+  .nav-links a:hover { color: var(--fg); }
+  .nav-cta {
+    background: var(--accent); color: #000;
+    padding: 7px 18px; border-radius: 6px;
+    font-weight: 500; font-size: 14px; text-decoration: none;
+    transition: background 0.2s, transform 0.1s;
+  }
+  .nav-cta:hover { background: var(--accent2); transform: translateY(-1px); }
+
+  /* ── SECTION WRAPPER ── */
+  section { position: relative; z-index: 1; }
+
+  /* ── HERO ── */
+  .hero {
+    min-height: 100vh;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    padding: 100px 24px 80px;
+    text-align: center;
+    background:
+      radial-gradient(ellipse 80% 50% at 50% -10%, #1f6feb22 0%, transparent 70%),
+      radial-gradient(ellipse 40% 30% at 80% 60%, #3fb95011 0%, transparent 60%);
+  }
+
+  .hero-badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 20px; padding: 4px 14px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px; color: var(--accent);
+    margin-bottom: 28px;
+    animation: fadeSlideDown 0.6s ease both;
+  }
+  .hero-badge::before { content: '●'; color: var(--green); font-size: 10px; }
+
+  .hero h1 {
+    font-family: 'Syne', sans-serif;
+    font-size: clamp(42px, 7vw, 80px);
+    font-weight: 800;
+    line-height: 1.05;
+    letter-spacing: -2px;
+    margin-bottom: 20px;
+    background: linear-gradient(135deg, #e6edf3 0%, #8b949e 100%);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    background-clip: text;
+    animation: fadeSlideDown 0.6s 0.1s ease both;
+  }
+  .hero h1 em {
+    font-style: normal;
+    background: linear-gradient(135deg, var(--accent) 0%, #79c0ff 100%);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .hero-sub {
+    font-size: 18px; color: var(--muted); font-weight: 300;
+    letter-spacing: 0.5px; margin-bottom: 36px;
+    animation: fadeSlideDown 0.6s 0.2s ease both;
+  }
+
+  .hero-actions {
+    display: flex; gap: 12px; justify-content: center; flex-wrap: wrap;
+    margin-bottom: 64px;
+    animation: fadeSlideDown 0.6s 0.3s ease both;
+  }
+  .btn-primary {
+    display: inline-flex; align-items: center; gap: 8px;
+    background: var(--accent); color: #000; font-weight: 600;
+    padding: 13px 28px; border-radius: 8px; text-decoration: none;
+    font-size: 15px; transition: all 0.2s;
+    box-shadow: 0 0 0 0 var(--accent);
+  }
+  .btn-primary:hover {
+    background: var(--accent2);
+    box-shadow: 0 0 32px var(--accent)44;
+    transform: translateY(-2px);
+  }
+  .btn-secondary {
+    display: inline-flex; align-items: center; gap: 8px;
+    background: var(--surface); color: var(--fg); font-weight: 500;
+    padding: 13px 28px; border-radius: 8px; text-decoration: none;
+    font-size: 15px; border: 1px solid var(--border);
+    transition: all 0.2s;
+  }
+  .btn-secondary:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+    transform: translateY(-2px);
+  }
+
+  /* ── FAKE TERMINAL ── */
+  .terminal-wrap {
+    width: 100%; max-width: 1060px;
+    animation: fadeSlideUp 0.8s 0.4s ease both;
+  }
+
+  .terminal-chrome {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow:
+      0 0 0 1px rgba(255,255,255,0.04),
+      0 32px 80px rgba(0,0,0,0.6),
+      0 0 60px var(--accent)11;
+    position: relative;
+  }
+  /* Animated gradient border */
+  .terminal-chrome::before {
+    content: '';
+    position: absolute; inset: -1px;
+    border-radius: 13px;
+    background: linear-gradient(90deg, var(--accent), #79c0ff, #3fb950, var(--amber), var(--accent));
+    background-size: 300% 100%;
+    animation: gradientBorder 4s linear infinite;
+    z-index: -1;
+  }
+
+  .terminal-titlebar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 12px 16px;
+    background: rgba(22,27,34,0.8);
+    border-bottom: 1px solid var(--border);
+    user-select: none;
+  }
+  .traffic { display: flex; gap: 6px; }
+  .traffic span {
+    width: 12px; height: 12px; border-radius: 50%;
+    display: block;
+  }
+  .traffic .red    { background: #ff5f57; }
+  .traffic .yellow { background: #febc2e; }
+  .traffic .green  { background: #28c840; }
+  .terminal-title {
+    flex: 1; text-align: center;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px; color: var(--muted);
+  }
+
+  .terminal-body {
+    display: flex;
+    height: 360px;
+  }
+
+  /* Sidebar */
+  .t-sidebar {
+    width: 200px; min-width: 200px;
+    background: var(--panel);
+    border-right: 1px solid var(--border);
+    overflow: hidden;
+    display: flex; flex-direction: column;
+  }
+  .t-card {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    transition: background 0.15s;
+    position: relative;
+  }
+  .t-card.active {
+    background: #1f2d3d;
+    border-left: 3px solid var(--accent);
+  }
+  .t-card.working {
+    border-bottom: 2px solid var(--amber);
+  }
+  .t-card.waiting {
+    border-top: 2px solid var(--orange);
+  }
+  .t-card-title {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px; font-weight: 600;
+    color: var(--fg); margin-bottom: 3px;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .t-card-title .dot { font-size: 10px; }
+  .t-card-title .dot.green { color: var(--green); }
+  .t-card-title .dot.amber { color: var(--amber); }
+  .t-card-title .dot.orange { color: var(--orange); }
+  .t-card-sub {
+    font-size: 10px; color: var(--muted);
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .t-card-sub.working { color: var(--amber); font-weight: 500; }
+  .t-card-sub.thinking { color: #a5d6ff; font-weight: 500; }
+  .t-new-tab {
+    margin-top: auto;
+    padding: 10px 12px;
+    font-size: 11px; color: var(--muted);
+    font-family: 'JetBrains Mono', monospace;
+    border-top: 1px solid var(--border);
+    cursor: pointer;
+  }
+  .t-new-tab:hover { color: var(--accent); }
+
+  /* Split terminal area */
+  .t-main { flex: 1; display: flex; overflow: hidden; }
+
+  .t-pane {
+    flex: 1;
+    padding: 16px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px; line-height: 1.7;
+    overflow: hidden;
+    position: relative;
+  }
+  .t-pane + .t-pane {
+    border-left: 2px solid var(--surface);
+  }
+
+  .tl { display: block; }
+  .tc-green  { color: var(--green); }
+  .tc-blue   { color: var(--accent); }
+  .tc-amber  { color: var(--amber); }
+  .tc-orange { color: var(--orange); }
+  .tc-muted  { color: var(--muted); }
+  .tc-cyan   { color: #56d4dd; }
+  .tc-pink   { color: #f778ba; }
+  .tc-bold   { font-weight: 600; }
+
+  .cursor { display: inline-block; width: 7px; height: 14px; background: var(--fg); vertical-align: middle; animation: blink 1.1s step-end infinite; }
+
+  /* Spinner animation on Working line */
+  .spinner { animation: spinChars 0.3s steps(1) infinite; }
+
+  /* Ribbon */
+  .t-ribbon {
+    display: flex; align-items: center; gap: 2px;
+    padding: 4px 8px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    height: 40px;
+  }
+  .r-btn {
+    padding: 4px 8px; border-radius: 4px;
+    font-size: 10px; color: var(--fg);
+    font-family: 'JetBrains Mono', monospace;
+    background: var(--surface);
+    cursor: pointer; white-space: nowrap;
+    display: flex; flex-direction: column; align-items: center;
+    line-height: 1.3;
+  }
+  .r-btn .r-icon { font-size: 12px; }
+  .r-btn .r-label { font-size: 9px; color: var(--muted); }
+  .r-btn.active { background: var(--accent)33; border-bottom: 2px solid var(--accent); }
+  .r-spacer { flex: 1; }
+  .r-update {
+    background: var(--amber); color: #000;
+    padding: 4px 10px; border-radius: 4px;
+    font-size: 11px; font-weight: 700;
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .r-font { font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 700; padding: 4px 6px; color: var(--muted); background: var(--surface); border-radius: 4px; cursor: pointer; }
+
+  /* ── SECTION HEADING ── */
+  .section-head {
+    text-align: center; margin-bottom: 56px;
+  }
+  .section-head h2 {
+    font-family: 'Syne', sans-serif;
+    font-size: clamp(28px, 4vw, 44px);
+    font-weight: 800; letter-spacing: -1px;
+    margin-bottom: 12px;
+  }
+  .section-head p { font-size: 17px; color: var(--muted); font-weight: 300; }
+  .section-kicker {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px; color: var(--accent);
+    letter-spacing: 2px; text-transform: uppercase;
+    margin-bottom: 10px; display: block;
+  }
+
+  /* ── FEATURES ── */
+  .features {
+    padding: 100px 48px;
+    background:
+      radial-gradient(ellipse 60% 40% at 0% 50%, #1f6feb0d 0%, transparent 60%),
+      radial-gradient(ellipse 60% 40% at 100% 50%, #3fb9500d 0%, transparent 60%);
+  }
+  .features-inner { max-width: 1060px; margin: 0 auto; }
+  .features-grid {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px;
+  }
+  .feat-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px;
+    position: relative;
+    overflow: hidden;
+    transition: transform 0.25s, border-color 0.25s, box-shadow 0.25s;
+  }
+  .feat-card::before {
+    content: '';
+    position: absolute; top: 0; left: 0; right: 0; height: 2px;
+    background: linear-gradient(90deg, transparent, var(--accent-card, var(--accent)), transparent);
+    opacity: 0; transition: opacity 0.3s;
+  }
+  .feat-card:hover::before { opacity: 1; }
+  .feat-card:hover {
+    transform: translateY(-4px);
+    border-color: rgba(88,166,255,0.3);
+    box-shadow: 0 12px 40px rgba(0,0,0,0.4), 0 0 0 1px rgba(88,166,255,0.1);
+  }
+  .feat-icon {
+    font-size: 28px; margin-bottom: 14px; display: block;
+    filter: drop-shadow(0 0 8px currentColor);
+  }
+  .feat-title {
+    font-family: 'Syne', sans-serif;
+    font-size: 18px; font-weight: 700;
+    margin-bottom: 8px; color: var(--fg);
+  }
+  .feat-desc { font-size: 14px; color: var(--muted); line-height: 1.6; }
+  .feat-demo {
+    margin-top: 16px; padding: 10px 12px;
+    background: var(--bg); border: 1px solid var(--border);
+    border-radius: 6px;
+    font-family: 'JetBrains Mono', monospace; font-size: 11px;
+    color: var(--muted);
+  }
+
+  /* mini animated spinner for feat-card 1 */
+  .mini-spinner { color: var(--accent); font-weight: 600; }
+
+  /* ── HOW IT WORKS ── */
+  .how {
+    padding: 100px 48px;
+    border-top: 1px solid var(--border);
+  }
+  .how-inner { max-width: 860px; margin: 0 auto; }
+  .steps {
+    display: grid; grid-template-columns: 1fr auto 1fr auto 1fr; align-items: center;
+    gap: 16px; margin-top: 56px;
+  }
+  .step {
+    text-align: center; padding: 32px 24px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    position: relative;
+  }
+  .step-num {
+    font-family: 'Syne', sans-serif;
+    font-size: 42px; font-weight: 800;
+    color: var(--accent)22;
+    line-height: 1;
+    margin-bottom: 12px;
+  }
+  .step-icon { font-size: 28px; margin-bottom: 10px; display: block; }
+  .step-title {
+    font-family: 'Syne', sans-serif;
+    font-weight: 700; font-size: 16px; margin-bottom: 6px;
+  }
+  .step-desc { font-size: 13px; color: var(--muted); }
+  .step-arrow { font-size: 20px; color: var(--border); }
+
+  /* ── TESTIMONIAL / CALLOUT ── */
+  .callout {
+    padding: 80px 48px;
+    background:
+      radial-gradient(ellipse 70% 60% at 50% 50%, #1f6feb1a 0%, transparent 70%);
+  }
+  .callout-inner {
+    max-width: 680px; margin: 0 auto; text-align: center;
+  }
+  .callout-quote {
+    font-family: 'Syne', sans-serif;
+    font-size: clamp(22px, 3vw, 32px);
+    font-weight: 700; line-height: 1.3;
+    margin-bottom: 24px;
+    color: var(--fg);
+  }
+  .callout-quote em {
+    font-style: normal;
+    background: linear-gradient(90deg, var(--accent), #79c0ff);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .callout-cta {
+    display: inline-flex; align-items: center; gap: 8px;
+    background: var(--accent); color: #000; font-weight: 700;
+    padding: 14px 32px; border-radius: 8px; text-decoration: none;
+    font-size: 16px; transition: all 0.2s;
+    box-shadow: 0 0 40px var(--accent)33;
+  }
+  .callout-cta:hover {
+    background: var(--accent2);
+    box-shadow: 0 0 60px var(--accent)55;
+    transform: translateY(-2px);
+  }
+
+  /* ── FOOTER ── */
+  footer {
+    border-top: 1px solid var(--border);
+    padding: 32px 48px;
+    display: flex; align-items: center; justify-content: space-between;
+    color: var(--muted); font-size: 13px;
+  }
+  footer .footer-logo {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 600; color: var(--fg);
+  }
+  footer .footer-logo span { color: var(--accent); }
+  .footer-links { display: flex; gap: 24px; }
+  .footer-links a { color: var(--muted); text-decoration: none; }
+  .footer-links a:hover { color: var(--fg); }
+
+  /* ── DOWNLOAD COUNTER ── */
+  .dl-counter {
+    display: inline-flex; align-items: center; gap: 14px;
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 10px 20px;
+    font-family: 'JetBrains Mono', monospace;
+    animation: fadeSlideDown 0.6s 0.35s ease both;
+  }
+  .dl-counter-num {
+    font-size: 26px; font-weight: 600; color: var(--accent);
+    letter-spacing: -1px; min-width: 64px; text-align: right;
+    transition: color 0.3s;
+  }
+  .dl-counter-label {
+    font-size: 11px; color: var(--muted);
+    text-align: left; line-height: 1.4;
+    border-left: 1px solid var(--border); padding-left: 14px;
+  }
+  .dl-counter-label strong { display: block; color: var(--fg); font-size: 13px; }
+  .dl-counter-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--green); flex-shrink: 0;
+    box-shadow: 0 0 6px var(--green);
+    animation: pulse 2s ease infinite;
+  }
+
+  /* ── ANIMATIONS ── */
+  @keyframes fadeSlideDown {
+    from { opacity: 0; transform: translateY(-16px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes fadeSlideUp {
+    from { opacity: 0; transform: translateY(24px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes gradientBorder {
+    0%   { background-position: 0% 50%; }
+    100% { background-position: 300% 50%; }
+  }
+  @keyframes blink {
+    0%, 100% { opacity: 1; } 50% { opacity: 0; }
+  }
+  @keyframes spinChars {
+    0%   { content: '⠋'; }
+    12%  { content: '⠙'; }
+    25%  { content: '⠹'; }
+    37%  { content: '⠸'; }
+    50%  { content: '⠼'; }
+    62%  { content: '⠴'; }
+    75%  { content: '⠦'; }
+    87%  { content: '⠧'; }
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: 0.6; }
+  }
+
+  /* Scroll reveal */
+  .reveal {
+    opacity: 0; transform: translateY(20px);
+    transition: opacity 0.55s ease, transform 0.55s ease;
+  }
+  .reveal.visible { opacity: 1; transform: translateY(0); }
+
+  @media (max-width: 860px) {
+    .features-grid { grid-template-columns: 1fr 1fr; }
+    .steps { grid-template-columns: 1fr; }
+    .step-arrow { display: none; }
+    nav .nav-links { display: none; }
+    .t-sidebar { display: none; }
+  }
+  @media (max-width: 560px) {
+    .features-grid { grid-template-columns: 1fr; }
+    footer { flex-direction: column; gap: 16px; text-align: center; }
+    nav { padding: 0 20px; }
+    .hero h1 { letter-spacing: -1px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ── NAVBAR ── -->
+<nav>
+  <div class="nav-logo">nano<span>AI</span></div>
+  <div class="nav-links">
+    <a href="#features">Features</a>
+    <a href="#how">How it works</a>
+    <a href="#download">Download</a>
+  </div>
+  <a href="#download" class="nav-cta">Download free →</a>
+</nav>
+
+<!-- ── HERO ── -->
+<section class="hero">
+  <div class="hero-badge">v2.1.0 — Now with What's New popup</div>
+
+  <h1>The <em>AI-Developer</em><br>Terminal</h1>
+  <p class="hero-sub">Multi-tab.&nbsp; Split view.&nbsp; Encrypted vault.&nbsp; Native macOS.</p>
+
+  <div class="hero-actions">
+    <a href="#download" class="btn-primary" id="dl-btn-hero" onclick="countDownload()">⬇ Download free</a>
+    <a href="https://github.com" class="btn-secondary">★ GitHub</a>
+  </div>
+
+  <div class="dl-counter" id="counter-hero" style="margin-bottom:48px;">
+    <div class="dl-counter-dot"></div>
+    <div class="dl-counter-num" id="count-hero">…</div>
+    <div class="dl-counter-label">
+      <strong>downloads</strong>
+      macOS · Apple Silicon &amp; Intel
+    </div>
+  </div>
+
+  <!-- Fake terminal window -->
+  <div class="terminal-wrap">
+    <div class="terminal-chrome">
+      <!-- Ribbon -->
+      <div class="t-ribbon">
+        <div class="r-btn"><span class="r-icon">◀</span><span class="r-label">Prev</span></div>
+        <div class="r-btn"><span class="r-icon">▶</span><span class="r-label">Next</span></div>
+        <div class="r-btn active"><span class="r-icon">⊟</span><span class="r-label">Split</span></div>
+        <div class="r-btn"><span class="r-icon">🌐</span><span class="r-label">Browse</span></div>
+        <div class="r-btn"><span class="r-icon">👁</span><span class="r-label">Watch</span></div>
+        <div class="r-btn"><span class="r-icon">📝</span><span class="r-label">Notes</span></div>
+        <div class="r-btn"><span class="r-icon">📋</span><span class="r-label">Copy</span></div>
+        <div class="r-btn"><span class="r-icon">🧹</span><span class="r-label">Clear</span></div>
+        <div class="r-btn"><span class="r-icon">🔔</span><span class="r-label">Notifs</span></div>
+        <div class="r-spacer"></div>
+        <div class="r-font">A-</div>
+        <div class="r-font">A+</div>
+      </div>
+
+      <!-- Body: sidebar + split panes -->
+      <div class="terminal-body">
+        <!-- Sidebar -->
+        <div class="t-sidebar">
+          <div class="t-card active working">
+            <div class="t-card-title">🤖 main <span class="dot amber" id="spin0">◐</span></div>
+            <div class="t-card-sub working" id="work-lbl">⚙ Working…</div>
+            <div class="t-card-sub" style="margin-top:2px;">📁 ~/projects/api</div>
+          </div>
+          <div class="t-card">
+            <div class="t-card-title">🐍 backend <span class="dot green">●</span></div>
+            <div class="t-card-sub">📁 ~/projects/backend</div>
+            <div class="t-card-sub">$ python manage.py</div>
+          </div>
+          <div class="t-card waiting">
+            <div class="t-card-title">🌿 infra <span class="dot orange">⏸</span></div>
+            <div class="t-card-sub">📁 ~/infra/tf</div>
+            <div class="t-card-sub" style="color:var(--orange);font-size:10px;">Waiting for input</div>
+          </div>
+          <div class="t-new-tab">+ New Terminal</div>
+        </div>
+
+        <!-- Left pane: claude running -->
+        <div class="t-pane">
+          <span class="tl tc-muted"># Claude Code — main</span>
+          <span class="tl">&nbsp;</span>
+          <span class="tl"><span class="tc-green">✓</span> <span class="tc-muted">Reading</span> <span class="tc-cyan">src/api/auth.py</span></span>
+          <span class="tl"><span class="tc-green">✓</span> <span class="tc-muted">Reading</span> <span class="tc-cyan">src/api/routes.py</span></span>
+          <span class="tl">&nbsp;</span>
+          <span class="tl" id="spinner-line"><span class="mini-spinner" id="sp">⠸</span> <span class="tc-blue">Thinking...</span></span>
+          <span class="tl">&nbsp;</span>
+          <span class="tl tc-muted"># I'll add JWT validation to the</span>
+          <span class="tl tc-muted"># auth middleware. Let me check</span>
+          <span class="tl tc-muted"># the existing token structure…</span>
+          <span class="tl">&nbsp;</span>
+          <span class="tl"><span class="tc-green">✓</span> <span class="tc-muted">Writing</span> <span class="tc-cyan">src/api/auth.py</span></span>
+        </div>
+
+        <!-- Right pane: shell -->
+        <div class="t-pane">
+          <span class="tl tc-muted"># Shell — split pane</span>
+          <span class="tl">&nbsp;</span>
+          <span class="tl"><span class="tc-green">~/projects/api</span> <span class="tc-muted">git:(</span><span class="tc-amber">main</span><span class="tc-muted">)</span></span>
+          <span class="tl"><span class="tc-blue">$</span> pytest tests/ -v</span>
+          <span class="tl">&nbsp;</span>
+          <span class="tl"><span class="tc-green">PASSED</span> tests/test_auth.py::test_login</span>
+          <span class="tl"><span class="tc-green">PASSED</span> tests/test_auth.py::test_token</span>
+          <span class="tl"><span class="tc-green">PASSED</span> tests/test_routes.py::test_get</span>
+          <span class="tl">&nbsp;</span>
+          <span class="tl"><span class="tc-green">3 passed</span> <span class="tc-muted">in 0.41s</span></span>
+          <span class="tl">&nbsp;</span>
+          <span class="tl"><span class="tc-green">~/projects/api</span> <span class="tc-muted">git:(</span><span class="tc-amber">main</span><span class="tc-muted">)</span></span>
+          <span class="tl"><span class="tc-blue">$</span> <span class="cursor"></span></span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── FEATURES ── -->
+<section class="features" id="features">
+  <div class="features-inner">
+    <div class="section-head reveal">
+      <span class="section-kicker">// Features</span>
+      <h2>Built for the <em>Claude</em> era</h2>
+      <p>Everything a developer needs when AI is doing the actual work</p>
+    </div>
+
+    <div class="features-grid">
+      <div class="feat-card reveal" style="--accent-card: var(--accent);">
+        <span class="feat-icon">🤖</span>
+        <div class="feat-title">AI Agent Detection</div>
+        <div class="feat-desc">Tab cards update in real time — spinner characters in Claude's output set <em>Thinking…</em> or <em>Working…</em> state. The 🤖 icon appears automatically.</div>
+        <div class="feat-demo">
+          <span id="demo-spinner" style="color:var(--accent);">⠸</span>
+          <span style="color:#a5d6ff;font-weight:600;"> Thinking...</span><br>
+          <span style="color:var(--amber);">⠼</span>
+          <span style="color:var(--amber);font-weight:500;"> Writing src/auth.py...</span>
+        </div>
+      </div>
+
+      <div class="feat-card reveal" style="--accent-card: var(--green);">
+        <span class="feat-icon">🔐</span>
+        <div class="feat-title">Encrypted Variable Vault</div>
+        <div class="feat-desc">API keys live encrypted in the macOS login Keychain — never plain text on disk. Unlock per-session with your system password.</div>
+        <div class="feat-demo" style="color:var(--green);">
+          ANTHROPIC_API_KEY = sk-ant-***<br>
+          OPENAI_API_KEY&nbsp;&nbsp;&nbsp;&nbsp;= sk-***<br>
+          <span style="color:var(--muted);"># 🔒 Encrypted (Fernet + Keychain)</span>
+        </div>
+      </div>
+
+      <div class="feat-card reveal" style="--accent-card: #56d4dd;">
+        <span class="feat-icon">⊟</span>
+        <div class="feat-title">Split View</div>
+        <div class="feat-desc">Side-by-side terminals. Select text in one pane and press <kbd style="background:var(--surface);padding:1px 5px;border-radius:3px;font-size:11px;">Tab</kbd> — it pastes directly into the other.</div>
+        <div class="feat-demo">
+          <span style="color:#56d4dd;">← Left pane (claude output)</span><br>
+          <span style="color:var(--border);">│</span><br>
+          <span style="color:var(--accent);">→ Tab → Right pane (pasted)</span>
+        </div>
+      </div>
+
+      <div class="feat-card reveal" style="--accent-card: #f778ba;">
+        <span class="feat-icon">🖼</span>
+        <div class="feat-title">Image Paste</div>
+        <div class="feat-desc">Take a screenshot (⌘⇧4), then right-click → <em>Paste image as file path</em>. NanoAI saves it to a temp PNG and types the path in.</div>
+        <div class="feat-demo">
+          <span style="color:var(--muted);">Right-click →</span>
+          <span style="color:#f778ba;"> 🖼 Paste image as file path</span><br>
+          <span style="color:var(--green);">/tmp/nanoai_images/clip_a4f2.png</span>
+        </div>
+      </div>
+
+      <div class="feat-card reveal" style="--accent-card: var(--amber);">
+        <span class="feat-icon">🔔</span>
+        <div class="feat-title">Smart Notifications</div>
+        <div class="feat-desc">Sound chimes when Claude finishes — even if you're watching that very terminal. Banner appears only for background tabs to avoid noise.</div>
+        <div class="feat-demo" style="color:var(--amber);">
+          ♪ Glass.aiff — AI finished<br>
+          <span style="color:var(--muted);">⚠  main: Claude is waiting [click]</span>
+        </div>
+      </div>
+
+      <div class="feat-card reveal" style="--accent-card: var(--orange);">
+        <span class="feat-icon">📁</span>
+        <div class="feat-title">Drag &amp; Drop Files</div>
+        <div class="feat-desc">Drag any file from Finder onto the terminal to insert its shell-quoted path. Images, scripts, configs — it just works.</div>
+        <div class="feat-demo">
+          <span style="color:var(--orange);">drop →</span>
+          <span style="color:var(--fg);"> '/Users/itay/screenshot.png'</span><br>
+          <span style="color:var(--muted);">(shell-safe quoted automatically)</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── HOW IT WORKS ── -->
+<section class="how" id="how">
+  <div class="how-inner">
+    <div class="section-head reveal">
+      <span class="section-kicker">// How it works</span>
+      <h2>Zero config. <em>Just open and run.</em></h2>
+      <p>NanoAI provisions its own Python venv on first launch</p>
+    </div>
+
+    <div class="steps">
+      <div class="step reveal">
+        <div class="step-num">01</div>
+        <span class="step-icon">🚀</span>
+        <div class="step-title">Open NanoAI</div>
+        <div class="step-desc">Double-click the .app. The launcher installs PyQt6 automatically in a venv. No Homebrew dance.</div>
+      </div>
+      <div class="step-arrow reveal">→</div>
+      <div class="step reveal">
+        <div class="step-num">02</div>
+        <span class="step-icon">💬</span>
+        <div class="step-title">Run claude</div>
+        <div class="step-desc">Type <code style="background:var(--surface);padding:2px 6px;border-radius:4px;font-family:'JetBrains Mono';font-size:12px;">claude</code> in any tab. NanoAI watches the output automatically.</div>
+      </div>
+      <div class="step-arrow reveal">→</div>
+      <div class="step reveal">
+        <div class="step-num">03</div>
+        <span class="step-icon">🤖</span>
+        <div class="step-title">Watch the cards</div>
+        <div class="step-desc">Sidebar cards show live AI state — Thinking, Working, or waiting for your input — across all tabs.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── PLATFORM ROADMAP ── -->
+<section style="padding:72px 48px;border-top:1px solid var(--border);">
+  <div style="max-width:860px;margin:0 auto;">
+    <div class="section-head reveal" style="margin-bottom:36px;">
+      <span class="section-kicker">// Platform support</span>
+      <h2>Built for macOS.<br><em>Coming to every platform.</em></h2>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;" class="reveal">
+
+      <!-- macOS — live -->
+      <div style="background:var(--panel);border:1px solid #3fb95044;border-radius:12px;padding:28px;position:relative;overflow:hidden;">
+        <div style="position:absolute;top:0;left:0;right:0;height:2px;background:var(--green);"></div>
+        <div style="font-size:32px;margin-bottom:12px;">🍎</div>
+        <div style="font-family:'Syne',sans-serif;font-weight:700;font-size:17px;color:var(--fg);margin-bottom:6px;">macOS</div>
+        <div style="display:inline-flex;align-items:center;gap:6px;background:#3fb95022;border:1px solid #3fb95055;border-radius:20px;padding:3px 10px;font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--green);font-weight:600;margin-bottom:10px;">
+          <span style="width:6px;height:6px;border-radius:50%;background:var(--green);display:inline-block;box-shadow:0 0 5px var(--green);"></span>
+          Available now · v2.1.0
+        </div>
+        <div style="font-size:13px;color:var(--muted);line-height:1.6;">Apple Silicon &amp; Intel. Native .app bundle. Auto-provisions its own Python venv.</div>
+      </div>
+
+      <!-- Linux — soon -->
+      <div style="background:var(--panel);border:1px solid #f0a50033;border-radius:12px;padding:28px;position:relative;overflow:hidden;">
+        <div style="position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,var(--amber),transparent);"></div>
+        <div style="font-size:32px;margin-bottom:12px;">🐧</div>
+        <div style="font-family:'Syne',sans-serif;font-weight:700;font-size:17px;color:var(--fg);margin-bottom:6px;">Linux</div>
+        <div style="display:inline-flex;align-items:center;gap:6px;background:#f0a50015;border:1px solid #f0a50044;border-radius:20px;padding:3px 10px;font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--amber);font-weight:600;margin-bottom:10px;">
+          <span style="width:6px;height:6px;border-radius:50%;background:var(--amber);display:inline-block;animation:pulse 1.5s ease infinite;"></span>
+          Coming soon
+        </div>
+        <div style="font-size:13px;color:var(--muted);line-height:1.6;">Core terminal engine already runs on Linux. Packaging as an AppImage + systemd keyring support in progress.</div>
+      </div>
+
+      <!-- Windows — planned -->
+      <div style="background:var(--panel);border:1px solid #30363d;border-radius:12px;padding:28px;position:relative;overflow:hidden;">
+        <div style="position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,var(--muted),transparent);"></div>
+        <div style="font-size:32px;margin-bottom:12px;">🪟</div>
+        <div style="font-family:'Syne',sans-serif;font-weight:700;font-size:17px;color:var(--fg);margin-bottom:6px;">Windows</div>
+        <div style="display:inline-flex;align-items:center;gap:6px;background:#8b949e15;border:1px solid #8b949e33;border-radius:20px;padding:3px 10px;font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--muted);font-weight:600;margin-bottom:10px;">
+          <span style="width:6px;height:6px;border-radius:50%;background:var(--muted);display:inline-block;"></span>
+          Planned
+        </div>
+        <div style="font-size:13px;color:var(--muted);line-height:1.6;">Requires winpty for pty emulation and Windows Credential Manager for the vault. On the roadmap.</div>
+      </div>
+
+    </div>
+
+    <!-- Notify strip -->
+    <div class="reveal" style="margin-top:28px;background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:20px 28px;display:flex;align-items:center;justify-content:space-between;gap:20px;flex-wrap:wrap;">
+      <div>
+        <div style="font-family:'Syne',sans-serif;font-weight:700;font-size:15px;color:var(--fg);margin-bottom:4px;">Get notified when Linux &amp; Windows land</div>
+        <div style="font-size:13px;color:var(--muted);">We'll send one email when each platform ships. No spam.</div>
+      </div>
+      <form onsubmit="handleNotify(event)" style="display:flex;gap:8px;flex-shrink:0;">
+        <input id="notify-email" type="email" placeholder="you@example.com" required
+          style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:9px 14px;font-size:13px;color:var(--fg);font-family:'IBM Plex Sans',sans-serif;outline:none;width:220px;"
+          onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--border)'">
+        <button type="submit"
+          style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:9px 16px;font-size:13px;font-weight:500;color:var(--fg);cursor:pointer;white-space:nowrap;font-family:'IBM Plex Sans',sans-serif;transition:all 0.2s;"
+          onmouseover="this.style.borderColor='var(--accent)';this.style.color='var(--accent)'"
+          onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--fg)'"
+          id="notify-btn">Notify me →</button>
+      </form>
+    </div>
+  </div>
+</section>
+
+<!-- ── CALLOUT / DOWNLOAD ── -->
+<section class="callout" id="download">
+  <div class="callout-inner reveal">
+    <div class="callout-quote">
+      A terminal that <em>knows when Claude is working</em> — and tells you the moment it's done.
+    </div>
+    <a href="#" class="callout-cta" onclick="countDownload()">⬇ Download NanoAI free →</a>
+    <div style="margin-top:24px;display:flex;align-items:center;justify-content:center;gap:16px;flex-wrap:wrap;">
+      <span style="color:var(--muted);font-size:13px;">macOS 13+  ·  Apple Silicon &amp; Intel  ·  Free &amp; open source</span>
+      <span class="dl-counter" style="padding:6px 14px;animation:none;">
+        <span class="dl-counter-dot"></span>
+        <span class="dl-counter-num" id="count-callout" style="font-size:18px;min-width:48px;">…</span>
+        <span class="dl-counter-label" style="font-size:10px;"><strong style="font-size:12px;">downloads</strong></span>
+      </span>
+    </div>
+  </div>
+</section>
+
+<!-- ── FOOTER ── -->
+<footer>
+  <div class="footer-logo">nano<span>AI</span> v2.1.0</div>
+  <div style="color:var(--muted);font-size:13px;">Built for macOS · Free &amp; Open Source</div>
+  <div class="footer-links">
+    <a href="#">GitHub</a>
+    <a href="#">Docs</a>
+    <a href="#">Changelog</a>
+  </div>
+</footer>
+
+<script>
+  // ── CONFIG ─────────────────────────────────────────────────────────────────
+  // Set GITHUB_REPO to "owner/repo" once you publish releases on GitHub.
+  // The page will sum all release asset download_count values automatically.
+  // Set to null to use the local-only counter.
+  const GITHUB_REPO = "gitayg/nanoAI";
+
+  // ── COUNTER ────────────────────────────────────────────────────────────────
+  const LS_KEY = 'nanoai_downloads';
+
+  function getLocalCount() {
+    return parseInt(localStorage.getItem(LS_KEY) || '0', 10);
+  }
+  function setLocalCount(n) {
+    localStorage.setItem(LS_KEY, String(n));
+  }
+
+  // Animate a number rolling up to `target`
+  function animateTo(el, target, duration = 1200) {
+    if (!el) return;
+    const start = parseInt(el.textContent.replace(/,/g,'')) || 0;
+    const startTime = performance.now();
+    const fmt = n => n.toLocaleString();
+    function step(now) {
+      const t = Math.min((now - startTime) / duration, 1);
+      // Ease-out cubic
+      const eased = 1 - Math.pow(1 - t, 3);
+      el.textContent = fmt(Math.round(start + (target - start) * eased));
+      if (t < 1) requestAnimationFrame(step);
+    }
+    requestAnimationFrame(step);
+  }
+
+  function setCount(n) {
+    animateTo(document.getElementById('count-hero'),    n);
+    animateTo(document.getElementById('count-callout'), n);
+  }
+
+  async function fetchGitHubDownloads(repo) {
+    const url = `https://api.github.com/repos/${repo}/releases`;
+    const r = await fetch(url, { headers: { Accept: 'application/vnd.github+json' } });
+    if (!r.ok) throw new Error('GitHub API error');
+    const releases = await r.json();
+    return releases.reduce((sum, rel) =>
+      sum + rel.assets.reduce((s, a) => s + a.download_count, 0), 0);
+  }
+
+  async function loadCounter() {
+    let count = getLocalCount();
+    if (GITHUB_REPO) {
+      try {
+        count = await fetchGitHubDownloads(GITHUB_REPO);
+        setLocalCount(count); // cache it
+      } catch(e) {
+        // GitHub API failed — fall back to cached local count
+        console.warn('GitHub counter unavailable, using local count');
+      }
+    }
+    setCount(count);
+  }
+
+  // Called when any Download button is clicked
+  function countDownload() {
+    if (GITHUB_REPO) return; // GitHub API is authoritative, don't double-count
+    const n = getLocalCount() + 1;
+    setLocalCount(n);
+    setCount(n);
+  }
+
+  loadCounter();
+
+  // ── SPINNER ────────────────────────────────────────────────────────────────
+  const FRAMES = ['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'];
+  const GEAR   = ['◐','◓','◑','◒'];
+  let fi = 0;
+  setInterval(() => {
+    fi = (fi+1) % FRAMES.length;
+    const s  = document.getElementById('sp');
+    const d  = document.getElementById('demo-spinner');
+    const s0 = document.getElementById('spin0');
+    const wl = document.getElementById('work-lbl');
+    if(s) s.textContent = FRAMES[fi];
+    if(d) d.textContent = FRAMES[fi];
+    if(s0) s0.textContent = GEAR[Math.floor(fi/2.5)%4];
+    if(wl && fi % 20 === 0) {
+      const isWorking = wl.textContent.startsWith('⚙');
+      wl.style.color = isWorking ? '#a5d6ff' : 'var(--amber)';
+      wl.textContent  = isWorking ? '💭 Thinking…' : '⚙ Working…';
+    }
+  }, 120);
+
+  // ── NOTIFY FORM ────────────────────────────────────────────────────────────
+  function handleNotify(e) {
+    e.preventDefault();
+    const btn = document.getElementById('notify-btn');
+    const email = document.getElementById('notify-email').value;
+    // Store locally (replace with your mailing-list API endpoint)
+    const saved = JSON.parse(localStorage.getItem('nanoai_notify') || '[]');
+    if (!saved.includes(email)) { saved.push(email); localStorage.setItem('nanoai_notify', JSON.stringify(saved)); }
+    btn.textContent = '✓ You\'re on the list!';
+    btn.style.color = 'var(--green)'; btn.style.borderColor = 'var(--green)';
+    btn.disabled = true;
+  }
+
+  // ── SCROLL REVEAL ──────────────────────────────────────────────────────────
+  const observer = new IntersectionObserver(entries => {
+    entries.forEach(e => { if(e.isIntersecting) e.target.classList.add('visible'); });
+  }, { threshold: 0.12 });
+  document.querySelectorAll('.reveal').forEach(el => observer.observe(el));
+</script>
+</body>
+</html>
