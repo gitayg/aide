@@ -113,18 +113,31 @@ APP_NAME     = "AIDE"
 # ── What's New ──────────────────────────────────────────────────────────────
 # Each entry: (emoji, short title, one-line description)
 # Add new bullets at the TOP of this list each time you ship a change.
-WHATS_NEW = [
-    ("🗂", "Tab-paste in split view",     "Select text, press Tab → pasted into the other split pane"),
-    ("🖼", "Image paste",                  "Right-click → Paste image as file path (clipboard screenshots → temp PNG)"),
-    ("📁", "Drag-and-drop files",          "Drag any file from Finder onto the terminal to insert its quoted path"),
-    ("🤖", "Bot detection in tab card",    "🤖 icon + Working/Thinking status row in the sidebar card while Claude runs"),
-    ("🔔", "Sound on active tab",          "AI-completion chime now plays even when the terminal is visible"),
-    ("🖱", "Click no longer interrupts",   "Fixed: clicking the terminal no longer sends spurious arrow-key sequences"),
-    ("A±", "Font size ±  buttons",         "Replaced the slider with compact A− / A+ buttons in the ribbon"),
-    ("↻",  "Update button in ribbon",      "Yellow ↻ Update button appears in the ribbon when aiterm.py changes on disk"),
-    ("🔐", "SSH host detection",           "Improved: parses more terminal-title formats and OSC 7 remote hostnames"),
-    ("📢", "What's New popup",             "This dialog — shown once after each update"),
-]
+# Release notes keyed by version string (semver, newest first).
+# Only entries for versions newer than the user's previous install are shown.
+WHATS_NEW: Dict[str, list] = {
+    "2.1.2": [
+        ("🔑", "API Keys in ribbon",          "One-click 🔑 API Keys button added to the toolbar"),
+        ("📝", "SideBar button renamed",       "Notes button in ribbon renamed to SideBar"),
+        ("🎨", "Cleaner tab card highlights",  "Single left-border encodes all state; no more 4-edge border noise"),
+        ("🐛", "Scrollback repetition fixed",  "Topmost history line no longer repeats when scrolling up"),
+    ],
+    "2.1.1": [
+        ("🔐", "Security hardening",           "13 injection / path-traversal / vault issues patched"),
+        ("⊟",  "Split-view tip popup",         "One-time guide explaining Tab-to-paste when you first split"),
+        ("🤖", "Better bot detection",         "Braille-spinner detection eliminates false positives from npm/git/pip"),
+        ("🔔", "Notifications reworked",       "Sound + banner fires correctly even on background tabs"),
+    ],
+    "2.1.0": [
+        ("🗂", "Tab-paste in split view",      "Select text, press Tab → pasted into the other split pane"),
+        ("🖼", "Image paste",                  "Right-click → Paste image as file path (clipboard screenshots → temp PNG)"),
+        ("📁", "Drag-and-drop files",          "Drag any file from Finder onto the terminal to insert its quoted path"),
+        ("🤖", "Bot detection in tab card",    "🤖 icon + Working/Thinking status row in the sidebar card while Claude runs"),
+        ("🖱", "Click no longer interrupts",   "Fixed: clicking the terminal no longer sends spurious arrow-key sequences"),
+        ("A±", "Font size ± buttons",          "Replaced the slider with compact A− / A+ buttons in the ribbon"),
+        ("🔐", "SSH host detection",           "Improved: parses more terminal-title formats and OSC 7 remote hostnames"),
+    ],
+}
 CONFIG_DIR   = Path.home() / ".aide"
 SESSION_FILE = CONFIG_DIR / "session.json"
 CONFIG_FILE  = CONFIG_DIR / "config.json"
@@ -285,12 +298,14 @@ class AppConfig:
     auto_restart:   bool             = False
     env_overrides:  Dict[str,str]    = field(default_factory=dict)
     last_seen_mtime:float            = 0.0   # mtime of aiterm.py at last run
+    last_seen_version:str            = ""    # version string at last run, e.g. "2.1.1"
     split_tip_shown:bool             = False  # one-time split-view tip shown
     def to_dict(self):
         return {"notif":self.notif.to_dict(),"card":self.card.to_dict(),
                 "shell":self.shell,"auto_restart":self.auto_restart,
                 "env_overrides":self.env_overrides,
                 "last_seen_mtime":self.last_seen_mtime,
+                "last_seen_version":self.last_seen_version,
                 "split_tip_shown":self.split_tip_shown}
     @classmethod
     def from_dict(cls, d):
@@ -299,6 +314,7 @@ class AppConfig:
                    shell=d.get("shell",""),auto_restart=d.get("auto_restart",False),
                    env_overrides=d.get("env_overrides",{}),
                    last_seen_mtime=float(d.get("last_seen_mtime",0.0)),
+                   last_seen_version=d.get("last_seen_version",""),
                    split_tip_shown=bool(d.get("split_tip_shown",False)))
     def save(self):
         try: CONFIG_FILE.write_text(json.dumps(self.to_dict(),indent=2))
@@ -2487,40 +2503,71 @@ def _dlg_ss():
 def _primary_btn(btn):
     btn.setStyleSheet(f"QPushButton{{background:{C_ACCENT.name()};color:#000;font-weight:bold;border:none;border-radius:4px;padding:6px 14px;}}QPushButton:hover{{background:{C_ACCENT.name()}cc;}}")
 
+def _ver_tuple(v: str):
+    """Convert "2.1.0" → (2, 1, 0) for comparison."""
+    try: return tuple(int(x) for x in v.split("."))
+    except: return (0,)
+
+def _whats_new_entries(from_version: str) -> list:
+    """Return (version, entries) pairs for all versions newer than from_version."""
+    from_t = _ver_tuple(from_version)
+    result = []
+    for ver, entries in WHATS_NEW.items():
+        if _ver_tuple(ver) > from_t:
+            result.append((ver, entries))
+    # Sort newest first
+    result.sort(key=lambda x: _ver_tuple(x[0]), reverse=True)
+    return result
+
+
 class WhatsNewDialog(QDialog):
-    """Shown once on the first launch after aiterm.py is updated."""
-    def __init__(self, parent=None):
+    """Shown once after an update; displays only changes since the previously installed version."""
+    def __init__(self, sections: list, from_version: str, parent=None):
         super().__init__(parent)
         self.setWindowTitle(f"What's New in {APP_NAME}")
-        self.setStyleSheet(_dlg_ss()); self.setFixedWidth(480)
+        self.setStyleSheet(_dlg_ss()); self.setFixedWidth(500)
         lay = QVBoxLayout(self); lay.setContentsMargins(0,0,0,16); lay.setSpacing(0)
         # header
-        hdr = QLabel(f"  ✨  What's new"); hdr.setFixedHeight(42)
+        if from_version:
+            hdr_text = f"  ✨  Updated {from_version} → {VERSION}"
+        else:
+            hdr_text = f"  ✨  What's new in {VERSION}"
+        hdr = QLabel(hdr_text); hdr.setFixedHeight(42)
         hdr.setStyleSheet(
             f"background:{C_ACCENT.name()};color:#000;font-weight:bold;"
             f"font-size:15px;padding:0 16px;")
         lay.addWidget(hdr)
-        # feature list
+        # scrollable body
+        scroll = QScrollArea(); scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("QScrollArea{border:none;}QScrollBar:vertical{width:4px;}QScrollBar::handle:vertical{background:#444;border-radius:2px;}")
         body = QWidget(); bl = QVBoxLayout(body)
-        bl.setContentsMargins(20, 14, 20, 4); bl.setSpacing(10)
-        for emoji, title, desc in WHATS_NEW:
-            row = QWidget(); rl = QHBoxLayout(row)
-            rl.setContentsMargins(0,0,0,0); rl.setSpacing(10)
-            ico = QLabel(emoji); ico.setFixedWidth(24)
-            ico.setStyleSheet("font-size:16px;background:transparent;")
-            ico.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
-            txt = QLabel(f"<b style='color:{C_FG.name()}'>{title}</b>"
-                         f"<br><span style='color:{C_MUTED.name()};font-size:11px;'>{desc}</span>")
-            txt.setWordWrap(True)
-            txt.setStyleSheet("background:transparent;")
-            rl.addWidget(ico); rl.addWidget(txt, 1)
-            bl.addWidget(row)
-        lay.addWidget(body, 1)
+        bl.setContentsMargins(20, 14, 20, 4); bl.setSpacing(0)
+        for ver, entries in sections:
+            # Version sub-header
+            ver_lbl = QLabel(f"v{ver}")
+            ver_lbl.setStyleSheet(
+                f"color:{C_ACCENT.name()};font-size:11px;font-weight:bold;"
+                f"background:transparent;padding:8px 0 4px 0;")
+            bl.addWidget(ver_lbl)
+            for emoji, title, desc in entries:
+                row = QWidget(); rl = QHBoxLayout(row)
+                rl.setContentsMargins(0, 2, 0, 6); rl.setSpacing(10)
+                ico = QLabel(emoji); ico.setFixedWidth(24)
+                ico.setStyleSheet("font-size:16px;background:transparent;")
+                ico.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
+                txt = QLabel(f"<b style='color:{C_FG.name()}'>{title}</b>"
+                             f"<br><span style='color:{C_MUTED.name()};font-size:11px;'>{desc}</span>")
+                txt.setWordWrap(True); txt.setStyleSheet("background:transparent;")
+                rl.addWidget(ico); rl.addWidget(txt, 1)
+                bl.addWidget(row)
+        bl.addStretch()
+        scroll.setWidget(body)
+        lay.addWidget(scroll, 1)
         # dismiss button
         btn = QPushButton("Got it"); _primary_btn(btn)
         btn.clicked.connect(self.accept)
         brow = QWidget(); brl = QHBoxLayout(brow)
-        brl.setContentsMargins(20,4,20,0)
+        brl.setContentsMargins(20, 8, 20, 0)
         brl.addStretch(); brl.addWidget(btn)
         lay.addWidget(brow)
 
@@ -3162,16 +3209,22 @@ class AIDEWindow(QMainWindow):
             if name is not None: s.custom_title=name; self._tab_bar.refresh_card(tid); self._update_status()
 
     def _maybe_show_whats_new(self):
-        """Show the What's New dialog if aiterm.py changed since the last run."""
+        """Show the What's New dialog when the version has changed since last run."""
         try:
             current_mtime = self._script_path.stat().st_mtime
         except Exception:
             return
-        if current_mtime != self.config.last_seen_mtime:
-            # Update stored mtime immediately so we don't show again next launch
-            self.config.last_seen_mtime = current_mtime
-            self.config.save()
-            dlg = WhatsNewDialog(self)
+        version_changed = self.config.last_seen_version != VERSION
+        mtime_changed   = current_mtime != self.config.last_seen_mtime
+        if not (version_changed or mtime_changed):
+            return
+        prev_version = self.config.last_seen_version
+        self.config.last_seen_mtime    = current_mtime
+        self.config.last_seen_version  = VERSION
+        self.config.save()
+        sections = _whats_new_entries(prev_version)
+        if sections:
+            dlg = WhatsNewDialog(sections, prev_version, self)
             dlg.exec()
 
     def _check_for_update(self):
