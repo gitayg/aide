@@ -2851,7 +2851,16 @@ class AIDEWindow(QMainWindow):
         self.setWindowTitle(f"{APP_NAME} {VERSION}  —  AI Dev Env")
         self.resize(1280,800)
         self.setStyleSheet(f"QMainWindow{{background:{C_BG.name()};}}QMenuBar{{background:{C_PANEL.name()};color:{C_FG.name()};border-bottom:1px solid {C_SURFACE.name()};}}QMenuBar::item:selected{{background:{C_SURFACE.name()};}}QMenu{{background:{C_SURFACE.name()};color:{C_FG.name()};border:1px solid {C_MUTED.name()};}}QMenu::item:selected{{background:{C_ACCENT.name()}44;color:{C_ACCENT.name()};}}")
-        self.menuBar().setVisible(False)
+        # macOS: menus appear in the system menu bar (not the window), so
+        # this is lightweight — it just adds the standard AIDE application menu.
+        mb = self.menuBar()
+        aide_m = mb.addMenu(APP_NAME)
+        _check_act = aide_m.addAction("Check for Updates")
+        _check_act.triggered.connect(self._manual_check_update)
+        aide_m.addSeparator()
+        aide_m.addAction(f"About {APP_NAME}", self._show_about)
+        aide_m.addSeparator()
+        aide_m.addAction("Quit", self.close)
 
         central=QWidget(); self.setCentralWidget(central)
         root=QVBoxLayout(central); root.setContentsMargins(0,0,0,0); root.setSpacing(0)
@@ -3097,6 +3106,9 @@ class AIDEWindow(QMainWindow):
                 self._hotkey_bar.mark_update_available(True)
                 n=ev[1]; self._hotkey_bar._update_btn.setToolTip(
                     f"{n} new commit{'s' if n!=1 else ''} on origin — click to pull & restart")
+            elif ev[0]=="git_up_to_date":
+                QMessageBox.information(self,"Check for Updates",
+                    f"{APP_NAME} v{VERSION} is up to date.")
 
     def _show_notif(self,tid:int,msg:str,ctx:str):
         s=self.sessions.get(tid)
@@ -3238,7 +3250,7 @@ class AIDEWindow(QMainWindow):
         self._git_update_checked=True
         threading.Thread(target=self._check_git_update,daemon=True).start()
 
-    def _check_git_update(self):
+    def _check_git_update(self, manual:bool=False):
         try:
             repo=str(self._script_path.parent)
             subprocess.run(["git","fetch","--quiet"],cwd=repo,
@@ -3247,7 +3259,22 @@ class AIDEWindow(QMainWindow):
                              cwd=repo,capture_output=True,text=True,timeout=5)
             if r.stdout.strip():
                 _EVENT_Q.put(("git_update",len(r.stdout.strip().splitlines())))
+            elif manual:
+                _EVENT_Q.put(("git_up_to_date",None))
         except: pass
+
+    def _manual_check_update(self):
+        """Triggered from the AIDE menu → Check for Updates."""
+        self._update_pending=False          # allow re-notification
+        self._git_update_checked=False      # allow re-check
+        self._hotkey_bar.mark_update_available(False)
+        threading.Thread(target=self._check_git_update,args=(True,),daemon=True).start()
+
+    def _show_about(self):
+        QMessageBox.about(self, f"About {APP_NAME}",
+            f"<b>{APP_NAME}</b> v{VERSION}<br>"
+            f"AI Dev Env — Native Desktop Terminal<br><br>"
+            f"<a href='https://github.com/gitayg/aide'>github.com/gitayg/aide</a>")
 
     def _do_restart(self):
         self._save_session()
