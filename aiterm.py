@@ -1564,17 +1564,18 @@ class TabCard(QFrame):
         waiting  = getattr(s,"waiting_input",False)
         if thinking:
             frame=self._GEAR_FRAMES[getattr(self,"_gear_tick",0)%len(self._GEAR_FRAMES)]
-            self._status_lbl.setText(frame)
+            self._status_lbl.setText(frame); self._status_lbl.setVisible(True)
             self._status_lbl.setStyleSheet("color:#a5d6ff;font-size:14px;font-weight:bold;background:transparent;")
         elif working:
             frame=self._GEAR_FRAMES[getattr(self,"_gear_tick",0)%len(self._GEAR_FRAMES)]
-            self._status_lbl.setText(frame)
+            self._status_lbl.setText(frame); self._status_lbl.setVisible(True)
             self._status_lbl.setStyleSheet("color:#f0a500;font-size:14px;font-weight:bold;background:transparent;")
         elif waiting:
-            self._status_lbl.setText("⏸")
+            self._status_lbl.setText("⏸"); self._status_lbl.setVisible(True)
             self._status_lbl.setStyleSheet("color:#ff7b54;font-size:13px;font-weight:bold;background:transparent;")
         else:
             self._status_lbl.setText("")
+            self._status_lbl.setVisible(False)
             self._status_lbl.setStyleSheet("background:transparent;")
         _map={"cwd":("📁",i.cwd),"cmd":("$",i.last_cmd[:24] if i.last_cmd else ""),
               "ssh":("⬡",i.ssh_host),"process":("⚙",i.process)}
@@ -1611,8 +1612,6 @@ class TabCard(QFrame):
 
     def mark_active(self,a:bool):
         self._active=a; self._apply_style()
-        self._lbl0.setStyleSheet(
-            f"color:{(C_ACCENT if a else C_FG).name()};font-weight:bold;font-size:12px;")
 
     def mark_kbd_focus(self, focused: bool):
         """Highlight this card as the keyboard-navigation cursor."""
@@ -1621,27 +1620,27 @@ class TabCard(QFrame):
 
     def _apply_style(self):
         kbd = getattr(self, "_kbd_focus", False)
-        wb=f"border-right:3px solid {C_WARN.name()};" if self.session.watching else ""
-        waiting=getattr(self.session,"waiting_input",False)
-        thinking=getattr(self.session,"claude_thinking",False)
-        working=getattr(self.session,"claude_working",False)
-        blink_on=getattr(self,"_blink_phase",False)
-        # Top border: blinks orange/salmon when waiting for input
-        tb=f"border-top:2px solid {'#ff7b54' if (waiting and blink_on) else 'transparent'};"
-        # Bottom border: colored glow when agent is active (always on, not blinking)
+        waiting  = getattr(self.session, "waiting_input", False)
+        thinking = getattr(self.session, "claude_thinking", False)
+        working  = getattr(self.session, "claude_working", False)
+        # Single left-border encodes state (priority: thinking > working > waiting > watching > active > kbd)
         if thinking:
-            bb="border-bottom:2px solid #a5d6ff;"
+            left = "border-left:3px solid #a5d6ff;"
         elif working:
-            bb=f"border-bottom:2px solid {'#f0a500' if blink_on else '#a07000'};"
-        else:
-            bb="border-bottom:1px solid #21262d;"
-        if self._active:
-            self.setStyleSheet(f"QFrame{{background:#1f2d3d;border-left:3px solid {C_ACCENT.name()};{bb}{wb}{tb}}}")
+            left = "border-left:3px solid #f0a500;"
+        elif waiting:
+            left = "border-left:3px solid #ff7b54;"
+        elif self.session.watching:
+            left = f"border-left:3px solid {C_WARN.name()};"
+        elif self._active:
+            left = f"border-left:3px solid {C_ACCENT.name()};"
         elif kbd:
-            # Keyboard focus: white/muted outline to distinguish from active (blue)
-            self.setStyleSheet(f"QFrame{{background:{C_SURFACE.name()};border-left:3px solid {C_MUTED.name()};{bb}{wb}{tb}}}")
+            left = f"border-left:3px solid {C_MUTED.name()};"
         else:
-            self.setStyleSheet(f"QFrame{{background:{C_PANEL.name()};{bb}{wb}{tb}}}QFrame:hover{{background:{C_SURFACE.name()};}}")
+            left = "border-left:3px solid transparent;"
+        bg = "#1f2d3d" if self._active else C_SURFACE.name() if kbd else C_PANEL.name()
+        hover = "" if (self._active or kbd) else f"QFrame:hover{{background:{C_SURFACE.name()};}}"
+        self.setStyleSheet(f"QFrame{{background:{bg};{left}}}{hover}")
 
     def mousePressEvent(self,e):
         if e.button()==Qt.MouseButton.LeftButton:
