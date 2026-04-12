@@ -3564,16 +3564,37 @@ if __name__ == "__main__":
     if args.reset:
         for f in (SESSION_FILE,CLIP_FILE): f.unlink(missing_ok=True)
         print(f"{APP_NAME}: session cleared."); sys.exit(0)
-    # Rename the macOS menu-bar title from "Python" to APP_NAME when
-    # running as a plain script (bundled .app already has CFBundleName set).
+    # Set macOS app name and Dock icon explicitly — when Python is exec'd
+    # from the .app bundle the Dock would otherwise show the Python rocket icon.
     try:
         from Foundation import NSBundle
+        from AppKit import NSApplication, NSImage
         NSBundle.mainBundle().infoDictionary()['CFBundleName'] = APP_NAME
+        # Locate AIDE.icns: prefer the bundle's Resources dir, fall back to
+        # a path relative to this script (dev mode).
+        _bundle_res = NSBundle.mainBundle().resourcePath()
+        _icns = Path(_bundle_res) / "AIDE.icns" if _bundle_res else None
+        if not _icns or not _icns.exists():
+            _icns = Path(__file__).parent / "AIDE.app" / "Contents" / "Resources" / "AIDE.icns"
+        if _icns and _icns.exists():
+            _ns_app = NSApplication.sharedApplication()
+            _img = NSImage.alloc().initWithContentsOfFile_(str(_icns))
+            if _img:
+                _ns_app.setApplicationIconImage_(_img)
     except Exception:
         pass
     app=QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setApplicationDisplayName(APP_NAME)
+    # Also set via Qt for the window icon / taskbar
+    try:
+        from PyQt6.QtGui import QIcon
+        _icns_qt = CONFIG_DIR.parent / ".aide" / "AIDE.icns"  # won't exist, use bundle path
+        _icns_path = Path(sys.argv[0]).parent.parent / "Resources" / "AIDE.icns"
+        if _icns_path.exists():
+            app.setWindowIcon(QIcon(str(_icns_path)))
+    except Exception:
+        pass
     app.setStyle("Fusion")
     app.setPalette(_dark_palette())
     win=AIDEWindow(shell=args.shell or "")
