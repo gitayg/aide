@@ -504,7 +504,14 @@ class SecureVault:
         except keyring.errors.KeyringError as e:
             raise VaultKeyUnavailable(f"Keychain read failed: {e}") from e
         if val is None: return None
-        return val.encode()
+        key = val.encode()
+        # Validate the retrieved value is actually a usable Fernet key
+        # before handing it to the caller.
+        try:
+            Fernet(key)
+        except Exception as e:
+            raise VaultKeyUnavailable(f"Keychain contains invalid key: {e}") from e
+        return key
 
     @classmethod
     def _create_key_in_keychain(cls)->bytes:
@@ -523,15 +530,34 @@ class SecureVault:
 
     # ── file I/O ───────────────────────────────────────────────────────────────
     def _load_raw(self):
-        try: self._raw = json.loads(self._path.read_text())
-        except Exception: self._raw = {}
+        try:
+            self._raw = json.loads(self._path.read_text())
+        except FileNotFoundError:
+            self._raw = {}   # First run — no file yet, that's fine.
+        except (json.JSONDecodeError, OSError) as e:
+            # Corrupted or unreadable vault — log and start empty rather than
+            # silently dropping data with no indication something went wrong.
+            import sys
+            print(f"[NanoAI] WARNING: vault file unreadable ({e}), starting empty.", file=sys.stderr)
+            self._raw = {}
 
     def _write_raw(self):
         try:
             self._path.write_text(json.dumps(self._raw, indent=2))
-            try: os.chmod(self._path, 0o600)
-            except Exception: pass
-        except Exception: pass
+        except OSError as e:
+            import sys
+            print(f"[NanoAI] ERROR: cannot write vault file: {e}", file=sys.stderr)
+            return
+        # Enforce restrictive permissions; warn if they can't be set.
+        try:
+            os.chmod(self._path, 0o600)
+            # Verify the chmod actually took effect.
+            if self._path.stat().st_mode & 0o077:
+                import sys
+                print("[NanoAI] WARNING: vault file has insecure permissions!", file=sys.stderr)
+        except OSError as e:
+            import sys
+            print(f"[NanoAI] WARNING: could not restrict vault permissions: {e}", file=sys.stderr)
 
     def _init_empty_file(self, f:Fernet):
         """Write a fresh, empty encrypted vault file using the given Fernet."""
@@ -710,7 +736,7 @@ class TermSession:
         if pid==0:
             os.close(master_fd); os.setsid()
             try: fcntl.ioctl(slave_fd,termios.TIOCSCTTY,0)
-            except: pass
+            except OSError: pass  # Not all platforms support TIOCSCTTY
             for fd in range(3): os.dup2(slave_fd,fd)
             if slave_fd>2: os.close(slave_fd)
             if self.info.cwd_full:
@@ -753,7 +779,10 @@ class TermSession:
         self._output_tail=(self._output_tail+text)[-self._TAIL_LEN:]
         if cwd:=self._osc7(data): self.info.cwd=_shorten_path(cwd); self.info.cwd_full=cwd
         if m:=self._URL_RE.search(text): self.info.local_url=m.group(0)
-        if m:=re.search(r"(claude --resume \S+)",text): self.claude_resume_cmd=m.group(1)
+        # Only accept resume tokens that are strictly alphanumeric + hyphens/underscores.
+        # This prevents malicious terminal output from injecting shell metacharacters.
+        if m:=re.search(r"claude --resume ([a-zA-Z0-9_-]+)",text):
+            self.claude_resume_cmd=f"claude --resume {m.group(1)}"
         if self._THINKING_RE.search(text):
             self.claude_thinking=True; self.claude_working=False
             self._ai_active_time=time.time()
@@ -782,6 +811,9 @@ class TermSession:
                     _EVENT_Q.put(("notif",self.tab_id,msg,self._output_tail))
                 break
 
+    # Valid hostname: letters, digits, hyphens, dots — no shell metacharacters.
+    _HOSTNAME_RE = re.compile(r'^[a-zA-Z0-9]([a-zA-Z0-9\-.]*[a-zA-Z0-9])?$')
+
     def _osc7(self, data:bytes)->Optional[str]:
         """Parse OSC 7 (working-directory notification).
         Also extracts the remote hostname when the file:// URL has a non-local host."""
@@ -789,9 +821,19 @@ class TermSession:
         if not m: return None
         host=m.group(1).decode("utf-8",errors="replace")
         path=unquote(m.group(2).decode("utf-8",errors="replace"))
+        # Validate and sanitize the path — reject traversal sequences and non-absolute paths.
+        if not path.startswith("/") or "\x00" in path:
+            return None
+        # Normalize and reject any remaining traversal after normalization.
+        import posixpath
+        clean = posixpath.normpath(path)
+        if ".." in clean.split("/"):
+            return None
         if host and host not in ("","localhost","127.0.0.1"):
-            self.info.ssh_host=host
-        return path
+            # Validate hostname format before storing
+            if self._HOSTNAME_RE.match(host):
+                self.info.ssh_host=host
+        return clean
 
     def _parse_ssh(self,title:str)->None:
         """Detect SSH host from terminal title.
@@ -837,17 +879,29 @@ class TermSession:
                         self.info.last_cmd=cmd
                         if cmd.startswith("ssh "):
                             for p in cmd.split()[1:]:
-                                if not p.startswith("-"): self.info.ssh_host=p.split("@")[-1]; break
+                                if not p.startswith("-"):
+                                    candidate = p.split("@")[-1]
+                                    # Validate hostname: only allow safe characters
+                                    if self._HOSTNAME_RE.match(candidate):
+                                        self.info.ssh_host = candidate
+                                    break
                         elif cmd.strip() in ("exit","logout"): self.info.ssh_host=""
-                except: pass
+                except (UnicodeDecodeError, ValueError):
+                    pass  # Malformed input bytes — skip silently
                 self._input_buf.clear()
             elif b in (0x7F,0x08):
                 if self._input_buf: self._input_buf.pop()
             elif 0x20<=b<0x7F: self._input_buf.append(b)
         try:
-            if IS_WINDOWS: self._proc.stdin.write(actual_data); self._proc.stdin.flush()
-            else: os.write(self.master_fd,actual_data)
-        except OSError: self.alive=False
+            if IS_WINDOWS:
+                written = self._proc.stdin.write(actual_data)
+                self._proc.stdin.flush()
+                if written != len(actual_data):
+                    self.alive = False  # Partial write — process likely dying
+            else:
+                os.write(self.master_fd, actual_data)
+        except (OSError, BrokenPipeError):
+            self.alive = False
 
     def resize(self,cols:int,rows:int)->None:
         if cols==self.cols and rows==self.rows: return
@@ -1236,7 +1290,8 @@ class TerminalWidget(QWidget):
                 if mime and mime.hasUrls():
                     paths = " ".join(
                         shlex.quote(u.toLocalFile())
-                        for u in mime.urls() if u.isLocalFile()
+                        for u in mime.urls()
+                        if u.isLocalFile() and "\x00" not in u.toLocalFile()
                     )
                     if paths:
                         self.session.scroll_offset = 0
@@ -1299,10 +1354,23 @@ class TerminalWidget(QWidget):
         img = cb.image()
         if img.isNull():
             return None
-        import tempfile, uuid
+        import tempfile
         tmp_dir = Path(tempfile.gettempdir()) / "nanoai_images"
-        tmp_dir.mkdir(exist_ok=True)
-        path = str(tmp_dir / f"clip_{uuid.uuid4().hex[:8]}.png")
+        # Create with restrictive permissions — only the current user can read.
+        tmp_dir.mkdir(exist_ok=True, mode=0o700)
+        try:
+            os.chmod(str(tmp_dir), 0o700)
+        except OSError:
+            pass
+        # NamedTemporaryFile guarantees a unique, unpredictable filename.
+        try:
+            with tempfile.NamedTemporaryFile(
+                dir=str(tmp_dir), suffix=".png", delete=False
+            ) as f:
+                path = f.name
+            os.chmod(path, 0o600)
+        except OSError:
+            return None
         img.save(path, "PNG")
         return path
 
@@ -1340,7 +1408,8 @@ class TerminalWidget(QWidget):
                 # File URLs from Finder copy
                 text = " ".join(
                     shlex.quote(u.toLocalFile())
-                    for u in cb.mimeData().urls() if u.isLocalFile()
+                    for u in cb.mimeData().urls()
+                    if u.isLocalFile() and "\x00" not in u.toLocalFile()
                 )
             if text and self.session:
                 self.session.scroll_offset=0
@@ -1372,7 +1441,9 @@ class TerminalWidget(QWidget):
         if not urls or not self.session:
             ev.ignore(); return
         paths = " ".join(
-            shlex.quote(u.toLocalFile()) for u in urls if u.isLocalFile()
+            shlex.quote(u.toLocalFile())
+            for u in urls
+            if u.isLocalFile() and "\x00" not in u.toLocalFile()
         )
         if paths:
             self.session.scroll_offset = 0
