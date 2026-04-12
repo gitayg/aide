@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# NanoAI launcher — auto-creates a venv, installs deps, runs the app.
+set -e
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VENV="$SCRIPT_DIR/.venv"
+PY="$VENV/bin/python"
+STAMP="$VENV/.deps_installed"
+
+if [ ! -x "$PY" ]; then
+  echo "NanoAI: creating virtualenv at $VENV"
+  python3 -m venv "$VENV"
+fi
+
+if [ ! -f "$STAMP" ]; then
+  echo "NanoAI: installing dependencies (PyQt6, pyte)"
+  "$PY" -m pip install --quiet --upgrade pip
+  "$PY" -m pip install --quiet PyQt6 pyte
+  touch "$STAMP"
+fi
+
+exec "$PY" "$SCRIPT_DIR/aiterm.py" "$@"
