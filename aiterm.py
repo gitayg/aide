@@ -133,6 +133,28 @@ VAULT_FILE      = CONFIG_DIR / "vault.enc"
 SCREENSHOTS_DIR = CONFIG_DIR / "screenshots"
 CONFIG_DIR.mkdir(exist_ok=True)
 
+# ── One-time migration from ~/.nanoai → ~/.aide ───────────────────────────────
+def _migrate_nanoai():
+    old_dir = Path.home() / ".nanoai"
+    for fname in ("session.json", "config.json", "clipboard.json", "vault.enc"):
+        src = old_dir / fname
+        dst = CONFIG_DIR / fname
+        if not src.exists(): continue
+        if dst.exists():
+            # Only overwrite session.json if the old one has more tabs
+            if fname == "session.json":
+                try:
+                    old_tabs = len(json.loads(src.read_text()).get("tabs", {}))
+                    new_tabs = len(json.loads(dst.read_text()).get("tabs", {}))
+                    if old_tabs <= new_tabs: continue
+                except: continue
+            else:
+                continue  # don't overwrite other files that already exist
+        try:
+            import shutil; shutil.copy2(str(src), str(dst))
+        except: pass
+_migrate_nanoai()
+
 DEFAULT_SHELL = os.environ.get("COMSPEC", "cmd.exe") if IS_WINDOWS else \
                 os.environ.get("SHELL", "/bin/bash")
 
@@ -1004,6 +1026,7 @@ class TerminalWidget(QWidget):
         Qt.Key.Key_Bar:"split_term",    Qt.Key.Key_B:"split_browse",
         Qt.Key.Key_C:"configure_cards",
         Qt.Key.Key_S:"configure_notifs",Qt.Key.Key_D:"show_notif_detail",
+        Qt.Key.Key_K:"open_settings",
     }
 
     def __init__(self, session:Optional[TermSession]=None, parent=None):
@@ -1891,6 +1914,7 @@ class HotkeyBar(QWidget):
         ("📋","Copy","copy_screen","^B-y"),
         ("📌","Paste","clipboard_menu","^B-v"),
         ("🧹","Clear","clear_line","clear input"),
+        ("🔑","API Keys","open_settings","^B-k"),
         ("🔔","Notifs","configure_notifs","^B-s"),
         ("🃏","Cards","configure_cards","^B-c"),
     ]
@@ -3019,6 +3043,11 @@ class AIDEWindow(QMainWindow):
             except queue.Empty: break
             if ev[0]=="notif": self._show_notif(ev[1],ev[2],ev[3])
             elif ev[0]=="blink": QApplication.alert(self,3000)
+            elif ev[0]=="git_update" and not self._update_pending:
+                self._update_pending=True
+                self._hotkey_bar.mark_update_available(True)
+                n=ev[1]; self._hotkey_bar._update_btn.setToolTip(
+                    f"{n} new commit{'s' if n!=1 else ''} on origin — click to pull & restart")
 
     def _show_notif(self,tid:int,msg:str,ctx:str):
         s=self.sessions.get(tid)
@@ -3070,7 +3099,7 @@ class AIDEWindow(QMainWindow):
 
     def _update_waiting_badge(self):
         count=sum(1 for s in self.sessions.values() if getattr(s,"waiting_input",False))
-        base=f"{APP_NAME}  —  AI Dev Env"
+        base=f"{APP_NAME} v{VERSION}  —  AI Dev Env"
         self.setWindowTitle(f"[{count} waiting]  {base}" if count else base)
         try: QApplication.instance().setBadgeNumber(count)
         except: pass
@@ -3147,15 +3176,31 @@ class AIDEWindow(QMainWindow):
             dlg.exec()
 
     def _check_for_update(self):
+        # ── local file change ──────────────────────────────────────────────────
         try: mtime=self._script_path.stat().st_mtime
-        except: return
-        if mtime<=self._script_mtime: return
-        self._script_mtime=mtime
-        if self._update_pending: return
-        self._update_pending=True
-        self._hotkey_bar.mark_update_available(True)
-        if self.config.auto_restart:
-            self._do_restart()
+        except: mtime=0.0
+        if mtime>self._script_mtime:
+            self._script_mtime=mtime
+            if not self._update_pending:
+                self._update_pending=True
+                self._hotkey_bar.mark_update_available(True)
+                if self.config.auto_restart: self._do_restart()
+            return
+        # ── git remote check (once per session, background) ───────────────────
+        if getattr(self,"_git_update_checked",False): return
+        self._git_update_checked=True
+        threading.Thread(target=self._check_git_update,daemon=True).start()
+
+    def _check_git_update(self):
+        try:
+            repo=str(self._script_path.parent)
+            subprocess.run(["git","fetch","--quiet"],cwd=repo,
+                           capture_output=True,timeout=10)
+            r=subprocess.run(["git","log","HEAD..origin/HEAD","--oneline"],
+                             cwd=repo,capture_output=True,text=True,timeout=5)
+            if r.stdout.strip():
+                _EVENT_Q.put(("git_update",len(r.stdout.strip().splitlines())))
+        except: pass
 
     def _do_restart(self):
         self._save_session()
@@ -3247,6 +3292,8 @@ class AIDEWindow(QMainWindow):
                 self.config.card.fields=fields; self.config.save()
                 for tid in self.sessions:
                     if c:=self._tab_bar._card_map.get(tid): c.cfg=self.config.card; c.refresh()
+
+    def _action_open_settings(self): self._open_settings()
 
     def _open_settings(self):
         dlg=SettingsDialog(self.config,self)
@@ -3379,12 +3426,15 @@ class AIDEWindow(QMainWindow):
             self._vault.flush()
 
     def _load_session(self):
-        def _log_err(msg):
-            try: (Path.home()/".nanoai"/"app.log").open("a").write(f"[session] {msg}\n")
+        log_file = Path.home()/".nanoai"/"app.log"
+        def _log(msg):
+            try: log_file.open("a").write(f"[session] {msg}\n")
             except: pass
+        def _log_err(msg): _log(f"ERROR: {msg}")
+        _log(f"loading from {SESSION_FILE}")
         try:
             raw=SESSION_FILE.read_text()
-        except FileNotFoundError: return
+        except FileNotFoundError: _log("session file not found"); return
         except Exception as e: _log_err(f"read error: {e}"); return
         try:
             data=json.loads(raw)
@@ -3401,13 +3451,17 @@ class AIDEWindow(QMainWindow):
         if _had_cleartext:
             try: SESSION_FILE.write_text(json.dumps(data,indent=2))
             except: pass
-        for k,v in data.get("tabs",{}).items():
+        tabs = data.get("tabs", {})
+        _log(f"found {len(tabs)} tabs")
+        for k,v in tabs.items():
             try:
                 tid=int(k); s=TermSession.from_dict(v,tid)
                 self.sessions[tid]=s; self._next_id=max(self._next_id,tid+1)
                 s.start(shell,self.config.env_overrides); self._tab_bar.add_card(s,self.config.card)
+                _log(f"loaded tab {k}: {s.custom_title!r}")
             except Exception as e:
                 _log_err(f"tab {k} load failed: {e}")
+        _log(f"loaded {len(self.sessions)} sessions total")
         active=data.get("active",-1)
         target=active if active in self.sessions else (next(iter(self.sessions)) if self.sessions else -1)
         if target>=0: self._switch_to(target)
