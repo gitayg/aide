@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# AIDE launcher — auto-creates a venv, installs deps, runs the app.
+set -e
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VENV="$SCRIPT_DIR/.venv"
+PY="$VENV/bin/python"
+STAMP="$VENV/.deps_installed"
+
+if [ ! -x "$PY" ]; then
+  echo "AIDE: creating virtualenv at $VENV"
+  python3 -m venv "$VENV"
+fi
+
+if [ ! -f "$STAMP" ]; then
+  echo "AIDE: installing dependencies…"
+  "$PY" -m pip install --quiet --upgrade pip
+  "$PY" -m pip install --quiet PyQt6 pyte cryptography keyring
+  touch "$STAMP"
+fi
+
+# Re-check for new required packages added since last stamp
+"$PY" -c "import cryptography.fernet, keyring" 2>/dev/null || {
+  echo "AIDE: installing missing packages…"
+  "$PY" -m pip install --quiet cryptography keyring
+}
+
+exec "$PY" "$SCRIPT_DIR/AIDE.py" "$@"

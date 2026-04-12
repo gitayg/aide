@@ -10,7 +10,7 @@
   AIDE — AI Dev Env  —  Native Desktop App
 
   Install:  pip install PyQt6 pyte PyQt6-WebEngine
-  Run:      python aiterm.py [--shell /bin/zsh] [--reset]
+  Run:      python AIDE.py [--shell /bin/zsh] [--reset]
 
   Key bindings — Windows shortcuts:
     Ctrl+T new tab   Ctrl+W close tab   Ctrl+Tab / Ctrl+Shift+Tab next/prev
@@ -297,7 +297,7 @@ class AppConfig:
     shell:          str              = ""
     auto_restart:   bool             = False
     env_overrides:  Dict[str,str]    = field(default_factory=dict)
-    last_seen_mtime:float            = 0.0   # mtime of aiterm.py at last run
+    last_seen_mtime:float            = 0.0   # mtime of AIDE.py at last run
     last_seen_version:str            = ""    # version string at last run, e.g. "2.1.1"
     split_tip_shown:bool             = False  # one-time split-view tip shown
     def to_dict(self):
@@ -1940,7 +1940,7 @@ class HotkeyBar(QWidget):
         self._btn_font_inc.setCursor(Qt.CursorShape.PointingHandCursor)
         self._btn_font_inc.clicked.connect(lambda: self._bump_font(+1))
         lay.addWidget(self._btn_font_dec); lay.addWidget(self._btn_font_inc)
-        # ── update button (hidden until aiterm.py changes on disk) ───────────
+        # ── update button (hidden until AIDE.py changes on disk) ───────────
         self._update_btn=QPushButton("↻  Update")
         self._update_btn.setFixedHeight(32)
         self._update_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1949,7 +1949,7 @@ class HotkeyBar(QWidget):
             "QPushButton{background:#b8860b;color:#fff8dc;font-weight:bold;font-size:11px;"
             "border:none;border-radius:3px;padding:0 10px;}"
             "QPushButton:hover{background:#e6b800;color:#0d1117;}")
-        self._update_btn.setToolTip("aiterm.py changed on disk — click to restart and apply")
+        self._update_btn.setToolTip("AIDE.py changed on disk — click to restart and apply")
         self._update_btn.clicked.connect(self.restart_requested)
         lay.addWidget(self._update_btn)
 
@@ -2696,7 +2696,7 @@ class NotifConfigDialog(QDialog):
         self._idle=QDoubleSpinBox(); self._idle.setRange(0.5,30); self._idle.setSingleStep(0.5)
         self._idle.setValue(cfg.idle_trigger_sec); lay.addRow("Idle trigger (sec):",self._idle)
         sep=QFrame(); sep.setFrameShape(QFrame.Shape.HLine); sep.setStyleSheet(f"color:{C_SURFACE.name()};"); lay.addRow(sep)
-        self._auto_restart=QCheckBox("Auto-restart when aiterm.py is updated on disk")
+        self._auto_restart=QCheckBox("Auto-restart when AIDE.py is updated on disk")
         self._auto_restart.setChecked(auto_restart); lay.addRow(self._auto_restart)
         br=QWidget(); brl=QHBoxLayout(br); brl.setContentsMargins(0,0,0,0); brl.setSpacing(8)
         sb=QPushButton("Save"); _primary_btn(sb); tb=QPushButton("Test sound"); cb2=QPushButton("Cancel")
@@ -2815,7 +2815,7 @@ class AIDEWindow(QMainWindow):
         # the previous-session screenshot overlay.
         self._show_screenshot_overlay=False
         if not self.sessions: self._new_tab()
-        # Show What's New popup if aiterm.py was updated since last run.
+        # Show What's New popup if AIDE.py was updated since last run.
         QTimer.singleShot(400, self._maybe_show_whats_new)
 
     def _build_ui(self):
@@ -2828,10 +2828,7 @@ class AIDEWindow(QMainWindow):
         file_m.addAction("Close Tab",lambda: self._dispatch_action("close_tab"))
         file_m.addSeparator()
         file_m.addAction("Quit",self.close)
-        settings_m=mb.addMenu("Settings")
-        settings_m.addAction("API Keys & Shell…",self._open_settings)
-        settings_m.addAction("Notifications…",lambda: self._dispatch_action("configure_notifs"))
-        settings_m.addAction("Tab Cards…",lambda: self._dispatch_action("configure_cards"))
+
         central=QWidget(); self.setCentralWidget(central)
         root=QVBoxLayout(central); root.setContentsMargins(0,0,0,0); root.setSpacing(0)
         self._hotkey_bar=HotkeyBar()
