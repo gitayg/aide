@@ -3542,6 +3542,13 @@ if __name__ == "__main__":
     if args.reset:
         for f in (SESSION_FILE,CLIP_FILE): f.unlink(missing_ok=True)
         print(f"{APP_NAME}: session cleared."); sys.exit(0)
+    # Rename the macOS menu-bar title from "Python" to APP_NAME when
+    # running as a plain script (bundled .app already has CFBundleName set).
+    try:
+        from Foundation import NSBundle
+        NSBundle.mainBundle().infoDictionary()['CFBundleName'] = APP_NAME
+    except Exception:
+        pass
     app=QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setApplicationDisplayName(APP_NAME)
