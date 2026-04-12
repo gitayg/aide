@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate NanoAI icon using DALL-E 3, then package as .icns."""
+"""Generate AIDE icon using DALL-E 3, then package as .icns."""
 import os, sys, subprocess, shutil
 from pathlib import Path
 from urllib.request import urlretrieve
@@ -12,12 +12,12 @@ except ImportError:
     import openai
 
 client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY") or
-    open(Path.home()/".nanoai"/"config.json").read() and
-    __import__("json").loads(open(Path.home()/".nanoai"/"config.json").read())
+    open(Path.home()/".aide"/"config.json").read() and
+    __import__("json").loads(open(Path.home()/".aide"/"config.json").read())
     .get("env_overrides", {}).get("OPENAI_API_KEY", ""))
 
 PROMPT = """
-A macOS app icon for 'NanoAI', an AI developer terminal app.
+A macOS app icon for 'AIDE', an AI developer terminal app.
 Style: flat, minimal, dark-themed macOS Big Sur icon.
 Design: A sleek terminal window with a dark navy-black (#0d1117) background,
 a thin title bar with three macOS traffic-light dots (red/yellow/green),
@@ -39,7 +39,7 @@ url = response.data[0].url
 print(f"Image URL: {url[:80]}…")
 
 # ── 2. Download the PNG ───────────────────────────────────────────────────────
-tmp_png = Path("/tmp/nanoai_icon_src.png")
+tmp_png = Path("/tmp/aide_icon_src.png")
 urlretrieve(url, tmp_png)
 print(f"Downloaded to {tmp_png}")
 
@@ -52,7 +52,7 @@ except ImportError:
 
 src = Image.open(tmp_png).convert("RGBA")
 
-OUT = Path(__file__).parent / "NanoAI.iconset"
+OUT = Path(__file__).parent / "AIDE.iconset"
 OUT.mkdir(exist_ok=True)
 
 SIZES = [
@@ -69,7 +69,7 @@ for px, name in SIZES:
     print(f"  {name}")
 
 # ── 4. Convert to .icns ───────────────────────────────────────────────────────
-icns = Path(__file__).parent / "NanoAI.app" / "Contents" / "Resources" / "NanoAI.icns"
+icns = Path(__file__).parent / "AIDE.app" / "Contents" / "Resources" / "AIDE.icns"
 subprocess.run(["iconutil", "-c", "icns", str(OUT), "-o", str(icns)], check=True)
 print(f"\nCreated {icns}")
 

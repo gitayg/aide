@@ -110,6 +110,35 @@ except ImportError:
 VERSION      = "2.1.2"
 APP_NAME     = "AIDE"
 
+# ── Tab-switch ping pong sound ─────────────────────────────────────────────────
+def _ping_pong_sound(tab_index: int = 0):
+    """Play a short ping-pong 'tick' sound. Each tab gets a slightly different
+    pitch so the user can distinguish tabs by ear."""
+    import io, wave, math, array
+    SAMPLE_RATE = 44100
+    DURATION = 0.04          # 40 ms — short, snappy
+    VOLUME = 0.15
+    # Base freq ~2200 Hz, each tab shifts ±80 Hz (wraps after 8)
+    freq = 2200 + (tab_index % 8) * 80
+    n_samples = int(SAMPLE_RATE * DURATION)
+    samples = array.array("h")
+    for i in range(n_samples):
+        t = i / SAMPLE_RATE
+        # Exponential decay envelope for that "tick" character
+        env = math.exp(-t * 120) * VOLUME
+        val = int(env * 32767 * math.sin(2 * math.pi * freq * t))
+        samples.append(max(-32767, min(32767, val)))
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(SAMPLE_RATE)
+        w.writeframes(samples.tobytes())
+    tmp = Path.home() / ".aide" / "tab_tick.wav"
+    tmp.write_bytes(buf.getvalue())
+    subprocess.Popen(["afplay", str(tmp)], stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL)
+
 # ── What's New ──────────────────────────────────────────────────────────────
 # Each entry: (emoji, short title, one-line description)
 # Add new bullets at the TOP of this list each time you ship a change.
@@ -2822,12 +2851,7 @@ class AIDEWindow(QMainWindow):
         self.setWindowTitle(f"{APP_NAME} {VERSION}  —  AI Dev Env")
         self.resize(1280,800)
         self.setStyleSheet(f"QMainWindow{{background:{C_BG.name()};}}QMenuBar{{background:{C_PANEL.name()};color:{C_FG.name()};border-bottom:1px solid {C_SURFACE.name()};}}QMenuBar::item:selected{{background:{C_SURFACE.name()};}}QMenu{{background:{C_SURFACE.name()};color:{C_FG.name()};border:1px solid {C_MUTED.name()};}}QMenu::item:selected{{background:{C_ACCENT.name()}44;color:{C_ACCENT.name()};}}")
-        mb=self.menuBar()
-        file_m=mb.addMenu("File")
-        file_m.addAction("New Tab",lambda: self._dispatch_action("new_tab"))
-        file_m.addAction("Close Tab",lambda: self._dispatch_action("close_tab"))
-        file_m.addSeparator()
-        file_m.addAction("Quit",self.close)
+        self.menuBar().setVisible(False)
 
         central=QWidget(); self.setCentralWidget(central)
         root=QVBoxLayout(central); root.setContentsMargins(0,0,0,0); root.setSpacing(0)
@@ -2923,6 +2947,10 @@ class AIDEWindow(QMainWindow):
 
     def _switch_to(self,tid:int):
         if tid not in self.sessions: return
+        if tid != self.active_id:
+            idx = list(self.sessions.keys()).index(tid) if tid in self.sessions else 0
+            try: threading.Thread(target=_ping_pong_sound, args=(idx,), daemon=True).start()
+            except: pass
         if self.active_id>=0 and self.active_id in self.sessions:
             self.sessions[self.active_id].notes=self._notes_panel.get_notes()
             self.sessions[self.active_id].tasks=self._notes_panel.get_tasks()
@@ -3455,7 +3483,7 @@ class AIDEWindow(QMainWindow):
             self._vault.flush()
 
     def _load_session(self):
-        log_file = Path.home()/".nanoai"/"app.log"
+        log_file = CONFIG_DIR / "app.log"
         def _log(msg):
             try: log_file.open("a").write(f"[session] {msg}\n")
             except: pass
