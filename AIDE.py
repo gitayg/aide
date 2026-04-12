@@ -2859,16 +2859,23 @@ class AIDEWindow(QMainWindow):
         self.setWindowTitle(f"{APP_NAME} {VERSION}  —  AI Dev Env")
         self.resize(1280,800)
         self.setStyleSheet(f"QMainWindow{{background:{C_BG.name()};}}QMenuBar{{background:{C_PANEL.name()};color:{C_FG.name()};border-bottom:1px solid {C_SURFACE.name()};}}QMenuBar::item:selected{{background:{C_SURFACE.name()};}}QMenu{{background:{C_SURFACE.name()};color:{C_FG.name()};border:1px solid {C_MUTED.name()};}}QMenu::item:selected{{background:{C_ACCENT.name()}44;color:{C_ACCENT.name()};}}")
-        # macOS: menus appear in the system menu bar (not the window), so
-        # this is lightweight — it just adds the standard AIDE application menu.
+        # macOS already creates an "AIDE" application menu automatically.
+        # Use MenuRole to slot our actions into it without creating a duplicate.
+        from PyQt6.QtGui import QAction
         mb = self.menuBar()
-        aide_m = mb.addMenu(APP_NAME)
-        _check_act = aide_m.addAction("Check for Updates")
+        _app_m = mb.addMenu("_app")          # throwaway menu — roles move actions to system menu
+        _check_act = QAction("Check for Updates", self)
+        _check_act.setMenuRole(QAction.MenuRole.ApplicationSpecificRole)
         _check_act.triggered.connect(self._manual_check_update)
-        aide_m.addSeparator()
-        aide_m.addAction(f"About {APP_NAME}", self._show_about)
-        aide_m.addSeparator()
-        aide_m.addAction("Quit", self.close)
+        _app_m.addAction(_check_act)
+        _about_act = QAction(f"About {APP_NAME}", self)
+        _about_act.setMenuRole(QAction.MenuRole.AboutRole)
+        _about_act.triggered.connect(self._show_about)
+        _app_m.addAction(_about_act)
+        _quit_act = QAction("Quit", self)
+        _quit_act.setMenuRole(QAction.MenuRole.QuitRole)
+        _quit_act.triggered.connect(self.close)
+        _app_m.addAction(_quit_act)
 
         central=QWidget(); self.setCentralWidget(central)
         root=QVBoxLayout(central); root.setContentsMargins(0,0,0,0); root.setSpacing(0)
