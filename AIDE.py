@@ -3233,16 +3233,6 @@ class AIDEWindow(QMainWindow):
             dlg.exec()
 
     def _check_for_update(self):
-        # ── local file change ──────────────────────────────────────────────────
-        try: mtime=self._script_path.stat().st_mtime
-        except: mtime=0.0
-        if mtime>self._script_mtime:
-            self._script_mtime=mtime
-            if not self._update_pending:
-                self._update_pending=True
-                self._hotkey_bar.mark_update_available(True)
-                if self.config.auto_restart: self._do_restart()
-            return
         # ── git remote check (once per session, background) ───────────────────
         if getattr(self,"_git_update_checked",False): return
         self._git_update_checked=True
@@ -3261,6 +3251,10 @@ class AIDEWindow(QMainWindow):
 
     def _do_restart(self):
         self._save_session()
+        try:
+            subprocess.run(["git","pull","--quiet"],cwd=str(self._script_path.parent),
+                           capture_output=True,timeout=30)
+        except: pass
         os.execv(sys.executable,[sys.executable]+sys.argv)
 
     def _action_toggle_notes(self):
