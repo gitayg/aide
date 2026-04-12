@@ -263,18 +263,21 @@ class AppConfig:
     auto_restart:   bool             = False
     env_overrides:  Dict[str,str]    = field(default_factory=dict)
     last_seen_mtime:float            = 0.0   # mtime of aiterm.py at last run
+    split_tip_shown:bool             = False  # one-time split-view tip shown
     def to_dict(self):
         return {"notif":self.notif.to_dict(),"card":self.card.to_dict(),
                 "shell":self.shell,"auto_restart":self.auto_restart,
                 "env_overrides":self.env_overrides,
-                "last_seen_mtime":self.last_seen_mtime}
+                "last_seen_mtime":self.last_seen_mtime,
+                "split_tip_shown":self.split_tip_shown}
     @classmethod
     def from_dict(cls, d):
         return cls(notif=NotifConfig.from_dict(d.get("notif",{})),
                    card=CardConfig.from_dict(d.get("card",{})),
                    shell=d.get("shell",""),auto_restart=d.get("auto_restart",False),
                    env_overrides=d.get("env_overrides",{}),
-                   last_seen_mtime=float(d.get("last_seen_mtime",0.0)))
+                   last_seen_mtime=float(d.get("last_seen_mtime",0.0)),
+                   split_tip_shown=bool(d.get("split_tip_shown",False)))
     def save(self):
         try: CONFIG_FILE.write_text(json.dumps(self.to_dict(),indent=2))
         except: pass
@@ -2413,6 +2416,53 @@ class WhatsNewDialog(QDialog):
         lay.addWidget(brow)
 
 
+class SplitTipDialog(QDialog):
+    """One-time tip shown when the user first enters terminal split view."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Split View tip")
+        self.setStyleSheet(_dlg_ss())
+        self.setFixedWidth(420)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(24, 20, 24, 20)
+        lay.setSpacing(14)
+
+        # Icon + title
+        title = QLabel("⊟  Split View")
+        title.setStyleSheet(f"color:{C_FG.name()};font-size:16px;font-weight:bold;")
+        lay.addWidget(title)
+
+        # Main tip
+        tip = QLabel(
+            "<b>Tab-to-paste</b> is active between the two panes.<br><br>"
+            "Select any text in one terminal, then press <b>Tab</b> —<br>"
+            "it gets pasted instantly into the other pane.<br><br>"
+            "Great for copying a command from one shell and running it in another."
+        )
+        tip.setStyleSheet(f"color:{C_FG.name()};font-size:13px;line-height:1.5;")
+        tip.setWordWrap(True)
+        lay.addWidget(tip)
+
+        # Visual hint
+        hint = QLabel("  Left pane  →  select text  →  Tab  →  Right pane  ")
+        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        hint.setStyleSheet(
+            f"color:{C_ACCENT.name()};font-family:'JetBrains Mono',monospace;"
+            f"font-size:12px;background:{C_SURFACE.name()};"
+            f"border:1px solid {C_ACCENT.name()}33;border-radius:6px;padding:8px;"
+        )
+        lay.addWidget(hint)
+
+        # Dismiss
+        btn = QPushButton("Got it")
+        _primary_btn(btn)
+        btn.clicked.connect(self.accept)
+        brow = QWidget(); brl = QHBoxLayout(brow)
+        brl.setContentsMargins(0, 4, 0, 0)
+        brl.addStretch(); brl.addWidget(btn)
+        lay.addWidget(brow)
+
+
 class RenameDialog(QDialog):
     def __init__(self,current:str,parent=None):
         super().__init__(parent); self.setWindowTitle("Rename Terminal")
@@ -2784,6 +2834,11 @@ class NanoAIWindow(QMainWindow):
             self._split_panel.setCurrentWidget(self._secondary_terminal); self._split_panel.setVisible(True)
             total=self._term_splitter.width()
             self._term_splitter.setSizes([total//2,total//2])
+            # Show the one-time Tab-to-paste tip
+            if not self.config.split_tip_shown:
+                self.config.split_tip_shown = True
+                self.config.save()
+                QTimer.singleShot(300, lambda: SplitTipDialog(self).exec())
         elif mode=="browse":
             bp = self._get_or_create_browser(self.active_id)
             self._split_panel.setCurrentWidget(bp); self._split_panel.setVisible(True)
