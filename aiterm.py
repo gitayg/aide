@@ -1542,8 +1542,8 @@ class TabCard(QFrame):
             self._status_lbl.setText("⏸")
             self._status_lbl.setStyleSheet("color:#ff7b54;font-size:13px;font-weight:bold;background:transparent;")
         else:
-            self._status_lbl.setText("●")
-            self._status_lbl.setStyleSheet("color:#3fb950;font-size:11px;background:transparent;")
+            self._status_lbl.setText("")
+            self._status_lbl.setStyleSheet("background:transparent;")
         _map={"cwd":("📁",i.cwd),"cmd":("$",i.last_cmd[:24] if i.last_cmd else ""),
               "ssh":("⬡",i.ssh_host),"process":("⚙",i.process)}
         extra=[f for f in self.cfg.fields if f!="title"]
