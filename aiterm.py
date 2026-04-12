@@ -664,13 +664,18 @@ class TermSession:
         (re.compile(r">>>\s*$",re.M),              "Python REPL waiting"),
         (re.compile(r"\?\s*$",re.M),               "Question / input needed"),
     ]
-    # Claude CLI spinner lines end in "ing..." — e.g. "Thinking...",
-    # "Running...", "Writing...".  We check THINKING first; the elif in
-    # _handle ensures WORKING only fires for non-thinking spinner lines.
-    _THINKING_RE = re.compile(r'[Tt]hinking\.\.\.')
-    _WORKING_RE  = re.compile(r'\w+ing\.\.\.')
-    # How many seconds with no spinner output before we consider Claude idle
-    _AI_IDLE_SECS = 3.0
+    # Claude CLI exclusively uses braille block spinner characters (U+2800 range).
+    # Virtually no other tool uses these, making them a near-zero false-positive signal.
+    # _THINKING_RE: braille char followed by "Thinking" on the same line.
+    # _WORKING_RE:  any braille char at all → Claude is active (tool use, writing, etc.)
+    # _DONE_RE:     Claude wraps responses in a ╭─…╰─ box; the closing ╰─ means done.
+    _SPINNER_CHARS = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+    _THINKING_RE = re.compile(rf'[{_SPINNER_CHARS}][^\n]*[Tt]hinking')
+    _WORKING_RE  = re.compile(rf'[{_SPINNER_CHARS}]')
+    _DONE_RE     = re.compile(r'╰[─━]')
+    # Safety-net decay: clear flags if no spinner arrives for this many seconds.
+    # Longer than before to survive gaps during long tool executions.
+    _AI_IDLE_SECS = 10.0
     _URL_RE   = re.compile(r"https?://(?:localhost|127\.0\.0\.1):(\d+\S*)")
     _TAIL_LEN = 3000
 
@@ -755,6 +760,10 @@ class TermSession:
         elif self._WORKING_RE.search(text):
             self.claude_working=True; self.claude_thinking=False
             self._ai_active_time=time.time()
+        # Immediate done: Claude's response closing border ╰─ means it finished.
+        # Reset flags right away instead of waiting for the decay timer.
+        elif self._DONE_RE.search(text) and (self.claude_working or self.claude_thinking):
+            self.claude_working=False; self.claude_thinking=False
         if self._sf: self.stream.feed(text)
         else:        self.stream.feed(data)
         self.dirty=True; self.last_out_time=time.time(); self._notif_armed=True
