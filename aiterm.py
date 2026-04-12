@@ -1546,11 +1546,7 @@ class TabCard(QFrame):
         title_row=QWidget(); title_row.setStyleSheet("background:transparent;")
         tr=QHBoxLayout(title_row); tr.setContentsMargins(0,0,0,0); tr.setSpacing(2)
         self._lbl0=QLabel(); self._lbl0.setStyleSheet(f"color:{C_FG.name()};font-weight:bold;font-size:12px;")
-        self._lbl0.setMaximumWidth(150); self._lbl0.setWordWrap(False); tr.addWidget(self._lbl0,1)
-        self._status_lbl=QLabel("●"); self._status_lbl.setFixedWidth(16)
-        self._status_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._status_lbl.setStyleSheet("color:#3fb950;font-size:11px;background:transparent;")
-        tr.addWidget(self._status_lbl)
+        self._lbl0.setMaximumWidth(160); self._lbl0.setWordWrap(False); tr.addWidget(self._lbl0,1)
         close_btn=QPushButton("✕"); close_btn.setFixedSize(16,16)
         close_btn.setStyleSheet(f"QPushButton{{background:transparent;color:{C_MUTED.name()};border:none;font-size:10px;padding:0;}}QPushButton:hover{{color:#ff6b6b;background:{C_SURFACE.name()};border-radius:3px;}}")
         close_btn.setToolTip("Close terminal"); close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1569,35 +1565,20 @@ class TabCard(QFrame):
         s=self.session; i=s.info
         thinking = getattr(s,"claude_thinking",False)
         working  = getattr(s,"claude_working",False)
-        # When Claude's spinner is active, always show 🤖 regardless of last_cmd
+        waiting  = getattr(s,"waiting_input",False)
+        # Title icon: rotating gear when AI is active, app icon otherwise
         if thinking or working:
-            icon="🤖"
+            frame=self._GEAR_FRAMES[getattr(self,"_gear_tick",0)%len(self._GEAR_FRAMES)]
+            icon_prefix=f"{frame} "
         else:
             icon=_app_icon(i.last_cmd)
+            icon_prefix=f"{icon} " if icon else ""
         watch_prefix="👁 " if s.watching else ""
-        icon_prefix=f"{icon} " if icon else ""
         self._lbl0.setText(f"{watch_prefix}{icon_prefix}{s.effective_title()}")
-        waiting  = getattr(s,"waiting_input",False)
-        if thinking:
-            frame=self._GEAR_FRAMES[getattr(self,"_gear_tick",0)%len(self._GEAR_FRAMES)]
-            self._status_lbl.setText(frame); self._status_lbl.setVisible(True)
-            self._status_lbl.setStyleSheet("color:#a5d6ff;font-size:14px;font-weight:bold;background:transparent;")
-        elif working:
-            frame=self._GEAR_FRAMES[getattr(self,"_gear_tick",0)%len(self._GEAR_FRAMES)]
-            self._status_lbl.setText(frame); self._status_lbl.setVisible(True)
-            self._status_lbl.setStyleSheet("color:#f0a500;font-size:14px;font-weight:bold;background:transparent;")
-        elif waiting:
-            self._status_lbl.setText("⏸"); self._status_lbl.setVisible(True)
-            self._status_lbl.setStyleSheet("color:#ff7b54;font-size:13px;font-weight:bold;background:transparent;")
-        else:
-            self._status_lbl.setText("")
-            self._status_lbl.setVisible(False)
-            self._status_lbl.setStyleSheet("background:transparent;")
         _map={"cwd":("📁",i.cwd),"cmd":("$",i.last_cmd[:24] if i.last_cmd else ""),
               "ssh":("⬡",i.ssh_host),"process":("⚙",i.process)}
         extra=[f for f in self.cfg.fields if f!="title"]
         # When agent is active, override the first info row with a status line
-        # so it's impossible to miss — e.g. "◐ Thinking..." in blue
         if thinking or working:
             blink_on=getattr(self,"_blink_phase",False)
             status_text="💭 Thinking…" if thinking else "⚙ Working…"
@@ -1606,7 +1587,6 @@ class TabCard(QFrame):
             self._lbl1.setText(visible_text)
             self._lbl1.setStyleSheet(f"color:{status_color};font-size:11px;font-weight:bold;")
             self._lbl1.setVisible(True); self._lbl1.setToolTip("")
-            # Push remaining info rows to lbl2/lbl3
             for n,lbl in enumerate((self._lbl2,self._lbl3)):
                 if n<len(extra):
                     field=extra[n]; icon2,val=_map.get(field,("",""))
@@ -1626,37 +1606,33 @@ class TabCard(QFrame):
                 else: lbl.setVisible(False); lbl.setToolTip("")
         self._apply_style()
 
-    def mark_active(self,a:bool):
-        self._active=a; self._apply_style()
+    def mark_active(self, a: bool):
+        self._active = a; self._apply_style()
+
+    def mark_visible(self, v: bool):
+        """Mark this card as visible in a split pane (secondary focus)."""
+        self._visible = v; self._apply_style()
 
     def mark_kbd_focus(self, focused: bool):
-        """Highlight this card as the keyboard-navigation cursor."""
-        self._kbd_focus = focused
-        self._apply_style()
+        self._kbd_focus = focused; self._apply_style()
 
     def _apply_style(self):
-        kbd = getattr(self, "_kbd_focus", False)
-        waiting  = getattr(self.session, "waiting_input", False)
-        thinking = getattr(self.session, "claude_thinking", False)
-        working  = getattr(self.session, "claude_working", False)
-        # Single left-border encodes state (priority: thinking > working > waiting > watching > active > kbd)
-        if thinking:
-            left = "border-left:3px solid #a5d6ff;"
-        elif working:
-            left = "border-left:3px solid #f0a500;"
-        elif waiting:
-            left = "border-left:3px solid #ff7b54;"
-        elif self.session.watching:
-            left = f"border-left:3px solid {C_WARN.name()};"
-        elif self._active:
-            left = f"border-left:3px solid {C_ACCENT.name()};"
+        kbd      = getattr(self, "_kbd_focus", False)
+        visible  = getattr(self, "_visible",   False)   # shown in secondary split pane
+        waiting  = getattr(self.session, "waiting_input",   False)
+        blink_on = getattr(self, "_blink_phase", False)
+        # Left border: amber blink for waiting; accent blue for focused/visible; muted for kbd
+        if waiting:
+            color = "#f0a500" if blink_on else "#7a4f00"
+        elif self._active or visible:
+            color = C_ACCENT.name()
         elif kbd:
-            left = f"border-left:3px solid {C_MUTED.name()};"
+            color = C_MUTED.name()
         else:
-            left = "border-left:3px solid transparent;"
-        bg = "#1f2d3d" if self._active else C_SURFACE.name() if kbd else C_PANEL.name()
-        hover = "" if (self._active or kbd) else f"QFrame:hover{{background:{C_SURFACE.name()};}}"
-        self.setStyleSheet(f"QFrame{{background:{bg};{left}}}{hover}")
+            color = "transparent"
+        bg    = "#1f2d3d" if self._active else C_SURFACE.name() if (visible or kbd) else C_PANEL.name()
+        hover = "" if (self._active or visible or kbd) else f"QFrame:hover{{background:{C_SURFACE.name()};}}"
+        self.setStyleSheet(f"QFrame{{background:{bg};border-left:3px solid {color};}}{hover}")
 
     def mousePressEvent(self,e):
         if e.button()==Qt.MouseButton.LeftButton:
@@ -1749,8 +1725,10 @@ class TabBar(QWidget):
     def remove_card(self,tid:int):
         if card:=self._card_map.pop(tid,None): card.deleteLater()
 
-    def set_active(self,tid:int):
-        for t,c in self._card_map.items(): c.mark_active(t==tid)
+    def set_active(self, tid: int, secondary_tid: int = -1):
+        for t, c in self._card_map.items():
+            c.mark_active(t == tid)
+            c.mark_visible(t == secondary_tid)
 
     # ── keyboard navigation ────────────────────────────────────────────────────
     def _cards(self) -> list:
@@ -2972,7 +2950,7 @@ class AIDEWindow(QMainWindow):
         if w>0 and h>0:
             s.resize(max(1,w//self._main_terminal._cw),max(1,h//self._main_terminal._ch))
         self._notes_panel.load(s.notes,s.tasks,s.variables,s.autostart_dir,s.autostart_cmd)
-        self._tab_bar.set_active(tid)
+        self._tab_bar.set_active(tid, self._secondary_id if self._split_mode=="terminal" else -1)
         self._main_terminal.update(); self._update_status()
         # Show the previous-session screenshot overlay only on the first
         # _switch_to after launch (during _load_session). User-initiated tab
@@ -3130,11 +3108,13 @@ class AIDEWindow(QMainWindow):
 
     def _refresh_cards(self):
         self._blink_phase=not getattr(self,"_blink_phase",False)
+        secondary_id = self._secondary_id if self._split_mode=="terminal" else -1
         for tid,s in self.sessions.items():
             card=self._tab_bar._card_map.get(tid)
             if card:
                 card._blink_phase=self._blink_phase
                 card._gear_tick=getattr(card,"_gear_tick",0)+1
+                card.mark_visible(tid==secondary_id)
             self._tab_bar.refresh_card(tid)
         self._update_waiting_badge()
         self._update_split_headers()
