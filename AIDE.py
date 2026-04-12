@@ -107,7 +107,7 @@ except ImportError:
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.1.2"
+VERSION      = "2.2.0"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -145,6 +145,14 @@ def _ping_pong_sound(tab_index: int = 0):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.2.0": [
+        ("🎵", "Tab switch sounds",             "Each tab plays a unique ping-pong tick sound when selected"),
+        ("🔄", "AIDE menu: Check for Updates",  "AIDE → Check for Updates manually triggers a git fetch + compare"),
+        ("🖼", "Custom AIDE icon",              "New dark terminal icon replaces the Python rocket in Dock and Finder"),
+        ("🔁", "Auto git pull on restart",      "↻ Update button now pulls latest code before restarting"),
+        ("🔒", "Git-only update detection",     "Update checks now use git remote only — no more local file watching"),
+        ("🏷", "Full rebrand to AIDE",          "All NanoAI/aiterm references replaced; config moved to ~/.aide/"),
+    ],
     "2.1.2": [
         ("🔑", "API Keys in ribbon",          "One-click 🔑 API Keys button added to the toolbar"),
         ("📝", "SideBar button renamed",       "Notes button in ribbon renamed to SideBar"),
