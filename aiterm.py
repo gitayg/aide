@@ -659,7 +659,12 @@ class _ScrollScreen(pyte.Screen):
     def index(self):
         top = getattr(self, 'margins', None)
         top_row = top.top if top else 0
-        self.scrollback.append(dict(self.buffer[top_row]))
+        row = dict(self.buffer[top_row])
+        # Deduplicate: skip consecutive identical lines (e.g. spinner frames that
+        # happen to trigger index() — prevents scrollback filling with hundreds of
+        # nearly-identical "⠸ Thinking…" rows that look repetitive when scrolling.
+        if not self.scrollback or row != self.scrollback[-1]:
+            self.scrollback.append(row)
         super().index()
 
     def erase_in_display(self, how=0, *args, **kwargs):
@@ -1115,6 +1120,7 @@ class TerminalWidget(QWidget):
         if off==0:
             return s.screen.buffer[y]
         sb=s.screen.scrollback; sb_len=len(sb)
+        off=min(off, sb_len)   # clamp: can't scroll past what's in the buffer
         if y < off:
             idx=sb_len - off + y
             return sb[idx] if 0<=idx<sb_len else {}
@@ -1881,7 +1887,7 @@ class HotkeyBar(QWidget):
         ("⊟","Split","split_term","^B-|"),
         ("🌐","Browse","split_browse","^B-b"),
         ("👁","Watch","toggle_watch","^B-x"),
-        ("📝","Notes","toggle_notes","^B-p"),
+        ("📝","SideBar","toggle_notes","^B-p"),
         ("📋","Copy","copy_screen","^B-y"),
         ("📌","Paste","clipboard_menu","^B-v"),
         ("🧹","Clear","clear_line","clear input"),
