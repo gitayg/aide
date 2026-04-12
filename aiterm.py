@@ -3379,28 +3379,40 @@ class AIDEWindow(QMainWindow):
             self._vault.flush()
 
     def _load_session(self):
+        def _log_err(msg):
+            try: (Path.home()/".nanoai"/"app.log").open("a").write(f"[session] {msg}\n")
+            except: pass
         try:
-            data=json.loads(SESSION_FILE.read_text()); shell=self.config.shell or DEFAULT_SHELL
-            # One-time scrub: older sessions stored variables in cleartext here.
-            # Drop them on load (they'll be rewritten without the field by _save_session).
-            _had_cleartext=False
-            for v in data.get("tabs",{}).values():
-                if isinstance(v,dict) and "variables" in v:
-                    v.pop("variables",None); _had_cleartext=True
-            if _had_cleartext:
-                try: SESSION_FILE.write_text(json.dumps(data,indent=2))
-                except: pass
-            for k,v in data.get("tabs",{}).items():
+            raw=SESSION_FILE.read_text()
+        except FileNotFoundError: return
+        except Exception as e: _log_err(f"read error: {e}"); return
+        try:
+            data=json.loads(raw)
+        except Exception as e: _log_err(f"parse error: {e}"); return
+        # Keep a rolling backup of the last good session file
+        try: (CONFIG_DIR/"session.json.bak").write_text(raw)
+        except: pass
+        shell=self.config.shell or DEFAULT_SHELL
+        # One-time scrub: older sessions stored variables in cleartext here.
+        _had_cleartext=False
+        for v in data.get("tabs",{}).values():
+            if isinstance(v,dict) and "variables" in v:
+                v.pop("variables",None); _had_cleartext=True
+        if _had_cleartext:
+            try: SESSION_FILE.write_text(json.dumps(data,indent=2))
+            except: pass
+        for k,v in data.get("tabs",{}).items():
+            try:
                 tid=int(k); s=TermSession.from_dict(v,tid)
                 self.sessions[tid]=s; self._next_id=max(self._next_id,tid+1)
                 s.start(shell,self.config.env_overrides); self._tab_bar.add_card(s,self.config.card)
-            active=data.get("active",-1)
-            target=active if active in self.sessions else (next(iter(self.sessions)) if self.sessions else -1)
-            if target>=0: self._switch_to(target)
-            # Fire each tab's autostart (if any) once the shell has had a moment
-            # to print its prompt. We send `cd <dir>` then the command, both
-            # newline-terminated, so the shell handles them as separate inputs.
-            for tid,sess in self.sessions.items():
+            except Exception as e:
+                _log_err(f"tab {k} load failed: {e}")
+        active=data.get("active",-1)
+        target=active if active in self.sessions else (next(iter(self.sessions)) if self.sessions else -1)
+        if target>=0: self._switch_to(target)
+        for tid,sess in self.sessions.items():
+            try:
                 cmd=(sess.autostart_cmd or "").strip()
                 d  =(sess.autostart_dir or "").strip()
                 if not cmd and not d: continue
@@ -3411,7 +3423,8 @@ class AIDEWindow(QMainWindow):
                 _tid=tid; _payload=payload
                 QTimer.singleShot(800, lambda t=_tid, p=_payload: (
                     self.sessions[t].write(p) if t in self.sessions else None))
-        except: pass
+            except Exception as e:
+                _log_err(f"tab {tid} autostart failed: {e}")
 
     def closeEvent(self,event):
         self._save_session()
