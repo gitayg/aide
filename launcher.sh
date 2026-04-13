@@ -69,4 +69,12 @@ if ! codesign --verify --quiet "$APP_BUNDLE" 2>/dev/null; then
   codesign --force --deep --sign - "$APP_BUNDLE" >> "$LOG" 2>&1 || true
 fi
 
+# Verify Python can read the project file (requires Full Disk Access on macOS).
+# If not, show a one-click dialog pointing the user to System Settings.
+if ! "$PY" -c "open('$PROJECT_DIR/AIDE.py')" 2>/dev/null; then
+  osascript -e 'display alert "AIDE needs Full Disk Access" message "AIDE.app cannot read its project files.\n\nTo fix:\n1. Open System Settings → Privacy & Security → Full Disk Access\n2. Click + and add AIDE.app\n3. Enable the toggle\n4. Reopen AIDE" as critical buttons {"Open System Settings", "Cancel"} default button "Open System Settings"' 2>/dev/null | grep -q "Open System Settings" && \
+    open "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles" || true
+  exit 1
+fi
+
 exec "$PY" "$PROJECT_DIR/AIDE.py" "$@" >> "$LOG" 2>&1
