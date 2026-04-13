@@ -107,7 +107,7 @@ except ImportError:
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.7.3"
+VERSION      = "2.7.4"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -3464,6 +3464,7 @@ class AIDEWindow(QMainWindow):
 
     def _swap_focus(self):
         if self._split_mode=="none": return
+        threading.Thread(target=_ping_pong_sound, args=(99,), daemon=True).start()
         if self._main_terminal.hasFocus():
             if self._split_mode=="terminal": self._secondary_terminal.setFocus()
             else:
