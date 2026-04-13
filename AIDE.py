@@ -91,7 +91,7 @@ from PyQt6.QtWidgets import (
     QStackedWidget, QGroupBox, QSlider, QMenu, QMenuBar, QScrollBar,
     QMessageBox, QTableWidget, QTableWidgetItem, QHeaderView,
 )
-from PyQt6.QtCore import Qt, QTimer, QSize, QRect, pyqtSignal, QUrl, QMimeData
+from PyQt6.QtCore import Qt, QTimer, QSize, QRect, QPointF, pyqtSignal, QUrl, QMimeData
 from PyQt6.QtGui import (
     QFont, QFontMetrics, QPainter, QColor, QPalette, QPen,
     QKeyEvent, QResizeEvent, QPixmap, QDrag, QTextCursor, QTextCharFormat,
@@ -107,7 +107,7 @@ except ImportError:
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.4.0"
+VERSION      = "2.5.0"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -139,12 +139,97 @@ def _ping_pong_sound(tab_index: int = 0):
     subprocess.Popen(["afplay", str(tmp)], stdout=subprocess.DEVNULL,
                      stderr=subprocess.DEVNULL)
 
+def _racket_hit_sound():
+    """Louder, sharper 'thwack' sound for the split-pane tab-paste."""
+    import io, wave, math, array, random
+    SAMPLE_RATE = 44100
+    DURATION = 0.06
+    VOLUME = 0.45
+    freq = 1400
+    n_samples = int(SAMPLE_RATE * DURATION)
+    samples = array.array("h")
+    rng = random.Random(42)
+    for i in range(n_samples):
+        t = i / SAMPLE_RATE
+        env = math.exp(-t * 90) * VOLUME
+        tone = math.sin(2 * math.pi * freq * t) + 0.4 * math.sin(2 * math.pi * freq * 2 * t)
+        noise = (rng.random() * 2 - 1) * 0.25
+        val = int(env * 32767 * (tone + noise))
+        samples.append(max(-32767, min(32767, val)))
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(SAMPLE_RATE)
+        w.writeframes(samples.tobytes())
+    tmp = Path.home() / ".aide" / "racket_hit.wav"
+    tmp.write_bytes(buf.getvalue())
+    subprocess.Popen(["afplay", str(tmp)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+class SplitBallOverlay(QWidget):
+    """Animates a ping-pong ball flying from one split pane to the other."""
+    _FRAMES = 22
+    _RADIUS = 7
+    _ARC    = 35   # pixels — how high the ball arcs above the straight line
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self._pos   = QPointF(0, 0)
+        self._frame = self._FRAMES  # starts hidden
+        self._start = QPointF(0, 0)
+        self._end   = QPointF(0, 0)
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._step)
+
+    def launch(self, start: QPointF, end: QPointF):
+        self._start = start
+        self._end   = end
+        self._frame = 0
+        self.setGeometry(self.parent().rect())
+        self.show(); self.raise_()
+        self._timer.start(14)   # ~70 fps
+
+    def _step(self):
+        self._frame += 1
+        if self._frame >= self._FRAMES:
+            self._timer.stop(); self.hide(); return
+        self.update()
+
+    def paintEvent(self, ev):
+        import math
+        if self._frame >= self._FRAMES: return
+        t  = self._frame / self._FRAMES
+        x  = self._start.x() + (self._end.x() - self._start.x()) * t
+        y  = (self._start.y() + (self._end.y() - self._start.y()) * t
+              - self._ARC * math.sin(math.pi * t))
+        alpha = int(255 * (1 - t * 0.2))
+        r = self._RADIUS
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        # Shadow
+        p.setBrush(QColor(0, 0, 0, 60))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawEllipse(int(x - r + 2), int(y - r + 2), r * 2, r * 2)
+        # Ball body
+        p.setBrush(QColor(255, 220, 50, alpha))
+        p.drawEllipse(int(x - r), int(y - r), r * 2, r * 2)
+        # Highlight
+        p.setBrush(QColor(255, 255, 200, alpha // 2))
+        p.drawEllipse(int(x - r // 2), int(y - r), r, r)
+        p.end()
+
+
 # ── What's New ──────────────────────────────────────────────────────────────
 # Each entry: (emoji, short title, one-line description)
 # Add new bullets at the TOP of this list each time you ship a change.
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.5.0": [
+        ("🏓", "Split-paste ball animation", "Tab-paste in split view animates a yellow ball flying between panes"),
+        ("🎾", "Racket-hit sound",           "Split-pane Tab-paste plays a sharp thwack distinct from tab-switch ticks"),
+    ],
     "2.4.0": [
         ("🔴", "Mark as Unread",   "Right-click any tab → Mark as Unread; orange dot + border until you return"),
         ("🔢", "Task count badge", "Blue pill on tab card shows number of tasks in that tab's notes panel"),
@@ -2897,6 +2982,8 @@ class AIDEWindow(QMainWindow):
         except: self._script_mtime=0.0
         self._update_pending=False
         self._show_screenshot_overlay=True  # only the first _switch_to (during session restore) gets the overlay
+        self._ball_overlay=SplitBallOverlay(self)
+        self._ball_overlay.hide()
         self._build_ui(); _build_keymap()
         self._hotkey_bar.set_btn_active("toggle_notes", self._notes_vis)
         for interval,fn in [(50,self._process_events),(1000,self._check_idle),
@@ -3148,6 +3235,7 @@ class AIDEWindow(QMainWindow):
             s.scroll_offset = 0
             s.write(text.encode("utf-8"))
             self._secondary_terminal.setFocus()
+            self._animate_split_ball(main_to_secondary=True)
 
     def _split_paste_to_main(self, text: str):
         """Tab-paste: secondary → main."""
@@ -3157,6 +3245,15 @@ class AIDEWindow(QMainWindow):
             s.scroll_offset = 0
             s.write(text.encode("utf-8"))
             self._main_terminal.setFocus()
+            self._animate_split_ball(main_to_secondary=False)
+
+    def _animate_split_ball(self, main_to_secondary: bool):
+        threading.Thread(target=_racket_hit_sound, daemon=True).start()
+        src = self._main_terminal if main_to_secondary else self._secondary_terminal
+        dst = self._secondary_terminal if main_to_secondary else self._main_terminal
+        src_center = src.mapTo(self, src.rect().center())
+        dst_center = dst.mapTo(self, dst.rect().center())
+        self._ball_overlay.launch(QPointF(src_center), QPointF(dst_center))
 
     def _swap_focus(self):
         if self._split_mode=="none": return
