@@ -107,7 +107,7 @@ except ImportError:
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.5.2"
+VERSION      = "2.6.0"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -226,6 +226,10 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.6.0": [
+        ("⊟",  "Shift+click to split",       "Shift+click any tab card to instantly split the view with that terminal"),
+        ("📨", "Sender label on Tab-paste",   "Pasted text is prefixed with '# incoming from [tab name]' in the target pane"),
+    ],
     "2.5.0": [
         ("🏓", "Split-paste ball animation", "Tab-paste in split view animates a yellow ball flying between panes"),
         ("🎾", "Racket-hit sound",           "Split-pane Tab-paste plays a sharp thwack distinct from tab-switch ticks"),
@@ -1668,6 +1672,7 @@ def _app_icon(cmd:str)->str:
 
 class TabCard(QFrame):
     clicked_signal=pyqtSignal(int)
+    shift_clicked_signal=pyqtSignal(int)
     rename_requested=pyqtSignal(int)
     close_requested=pyqtSignal(int)
     reorder_requested=pyqtSignal(int,int,bool)  # src_tab_id, target_tab_id, place_before
@@ -1794,7 +1799,10 @@ class TabCard(QFrame):
     def mousePressEvent(self,e):
         if e.button()==Qt.MouseButton.LeftButton:
             self._press_pos=e.pos()
-            self.clicked_signal.emit(self.session.tab_id)
+            if e.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                self.shift_clicked_signal.emit(self.session.tab_id)
+            else:
+                self.clicked_signal.emit(self.session.tab_id)
 
     def contextMenuEvent(self,e):
         menu=QMenu(self)
@@ -1872,7 +1880,8 @@ class TabCard(QFrame):
 
 
 class TabBar(QWidget):
-    tab_selected=pyqtSignal(int); new_tab_clicked=pyqtSignal(); rename_requested=pyqtSignal(int)
+    tab_selected=pyqtSignal(int); shift_tab_selected=pyqtSignal(int)
+    new_tab_clicked=pyqtSignal(); rename_requested=pyqtSignal(int)
     close_requested=pyqtSignal(int); tabs_reordered=pyqtSignal(list)
 
     def __init__(self,parent=None):
@@ -1894,6 +1903,7 @@ class TabBar(QWidget):
 
     def add_card(self,s:TermSession,cfg:CardConfig)->TabCard:
         card=TabCard(s,cfg); card.clicked_signal.connect(self._on_card_clicked)
+        card.shift_clicked_signal.connect(self.shift_tab_selected)
         card.rename_requested.connect(self.rename_requested)
         card.close_requested.connect(self.close_requested)
         card.reorder_requested.connect(self._handle_reorder)
@@ -3031,6 +3041,7 @@ class AIDEWindow(QMainWindow):
         mid=QWidget(); ml=QHBoxLayout(mid); ml.setContentsMargins(0,0,0,0); ml.setSpacing(0)
         self._tab_bar=TabBar()
         self._tab_bar.tab_selected.connect(self._on_tab_clicked)
+        self._tab_bar.shift_tab_selected.connect(self._on_shift_tab_clicked)
         self._tab_bar.new_tab_clicked.connect(lambda: self._new_tab())
         self._tab_bar.rename_requested.connect(self._rename_tab_by_id)
         self._tab_bar.close_requested.connect(self._close_tab_with_confirm)
@@ -3230,20 +3241,26 @@ class AIDEWindow(QMainWindow):
     def _split_paste_to_secondary(self, text: str):
         """Tab-paste: main → secondary."""
         if self._split_mode != "terminal": return
-        s = self._secondary_terminal.session
-        if s:
-            s.scroll_offset = 0
-            s.write(text.encode("utf-8"))
+        src_s = self._main_terminal.session
+        dst_s = self._secondary_terminal.session
+        if dst_s:
+            dst_s.scroll_offset = 0
+            sender = src_s.effective_title() if src_s else "other pane"
+            payload = f"# incoming from [{sender}]\n{text}"
+            dst_s.write(payload.encode("utf-8"))
             self._secondary_terminal.setFocus()
             self._animate_split_ball(main_to_secondary=True)
 
     def _split_paste_to_main(self, text: str):
         """Tab-paste: secondary → main."""
         if self._split_mode != "terminal": return
-        s = self._main_terminal.session
-        if s:
-            s.scroll_offset = 0
-            s.write(text.encode("utf-8"))
+        src_s = self._secondary_terminal.session
+        dst_s = self._main_terminal.session
+        if dst_s:
+            dst_s.scroll_offset = 0
+            sender = src_s.effective_title() if src_s else "other pane"
+            payload = f"# incoming from [{sender}]\n{text}"
+            dst_s.write(payload.encode("utf-8"))
             self._main_terminal.setFocus()
             self._animate_split_ball(main_to_secondary=False)
 
@@ -3503,6 +3520,14 @@ class AIDEWindow(QMainWindow):
                 self._set_split("terminal")
             return
         self._switch_to(tid)
+
+    def _on_shift_tab_clicked(self, tid: int):
+        """Shift+click a tab → instantly split current tab with it."""
+        if tid == self.active_id: return
+        if tid not in self.sessions: return
+        # If already in split mode, just swap the secondary pane.
+        self._secondary_id = tid
+        self._set_split("terminal")
 
     def _update_split_picking_ui(self):
         if self._split_picking:
