@@ -107,7 +107,7 @@ except ImportError:
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.7.0"
+VERSION      = "2.7.1"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -2431,6 +2431,11 @@ class NotesPanel(QWidget):
         self._del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._del_btn.setToolTip("Remove selected variable")
         self._del_btn.clicked.connect(self._del_var_row); vh_lay.addWidget(self._del_btn)
+        self._copy_val_btn=QPushButton("⎘"); self._copy_val_btn.setFixedSize(18,18)
+        self._copy_val_btn.setStyleSheet(_btn_css)
+        self._copy_val_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._copy_val_btn.setToolTip("Copy value of selected variable")
+        self._copy_val_btn.clicked.connect(self._copy_var_value); vh_lay.addWidget(self._copy_val_btn)
         self._lock_btn=QPushButton("🔓"); self._lock_btn.setFixedSize(22,18)
         self._lock_btn.setStyleSheet(_btn_css)
         self._lock_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -2535,6 +2540,14 @@ class NotesPanel(QWidget):
         if not self._vault_unlocked: return
         rows={i.row() for i in self._vars_table.selectedItems()}
         for r in sorted(rows,reverse=True): self._vars_table.removeRow(r)
+
+    def _copy_var_value(self):
+        rows={i.row() for i in self._vars_table.selectedItems()}
+        if not rows: return
+        row=min(rows)
+        item=self._vars_table.item(row,1)
+        if item:
+            QApplication.clipboard().setText(item.text())
 
     def _on_tasks_changed(self):
         if self._numbering: return
