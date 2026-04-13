@@ -107,7 +107,7 @@ except ImportError:
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.6.0"
+VERSION      = "2.7.0"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -226,6 +226,9 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.7.0": [
+        ("📁", "Tab groups",  "Right-click any tab → Move to Group; click group header to collapse/expand"),
+    ],
     "2.6.0": [
         ("⊟",  "Shift+click to split",       "Shift+click any tab card to instantly split the view with that terminal"),
         ("📨", "Sender label on Tab-paste",   "Pasted text is prefixed with '# incoming from [tab name]' in the target pane"),
@@ -895,7 +898,7 @@ class TermSession:
 
     def __init__(self, tab_id:int, cols:int=80, rows:int=24):
         self.tab_id=tab_id; self.cols=cols; self.rows=rows
-        self.custom_title=""; self.notes=""; self.tasks=""; self.variables:Dict[str,str]={}
+        self.custom_title=""; self.notes=""; self.tasks=""; self.group:str=""; self.variables:Dict[str,str]={}
         self.autostart_dir:str=""; self.autostart_cmd:str=""
         self.browser_url:str=""; self.watching=False
         self.info=TermInfo()
@@ -1115,7 +1118,7 @@ class TermSession:
     def to_dict(self)->dict:
         # NB: variables are NEVER persisted here — they live encrypted in the
         # SecureVault (VAULT_FILE). Only keep them in memory on this object.
-        return dict(custom_title=self.custom_title,notes=self.notes,tasks=self.tasks,
+        return dict(custom_title=self.custom_title,notes=self.notes,tasks=self.tasks,group=self.group,
                     autostart_dir=self.autostart_dir,autostart_cmd=self.autostart_cmd,
                     browser_url=self.browser_url,watching=self.watching,
                     cwd=self.info.cwd_full or self.info.cwd,
@@ -1124,7 +1127,7 @@ class TermSession:
     @classmethod
     def from_dict(cls,d:dict,tab_id:int)->"TermSession":
         s=cls(tab_id); s.custom_title=d.get("custom_title",""); s.notes=d.get("notes","")
-        s.tasks=d.get("tasks",""); s.variables={}  # populated from vault on unlock
+        s.tasks=d.get("tasks",""); s.group=d.get("group",""); s.variables={}  # populated from vault on unlock
         s.autostart_dir=d.get("autostart_dir",""); s.autostart_cmd=d.get("autostart_cmd","")
         s.browser_url=d.get("browser_url",""); s.watching=d.get("watching",False)
         stored_cwd=d.get("cwd","")
@@ -1676,6 +1679,7 @@ class TabCard(QFrame):
     rename_requested=pyqtSignal(int)
     close_requested=pyqtSignal(int)
     reorder_requested=pyqtSignal(int,int,bool)  # src_tab_id, target_tab_id, place_before
+    move_to_group_requested = pyqtSignal(int)   # tab_id
 
     _MIME_TYPE="application/x-aide-tab"
 
@@ -1812,6 +1816,10 @@ class TabCard(QFrame):
         else:
             act=menu.addAction("Mark as Unread")
             act.triggered.connect(self._mark_unread)
+        menu.addSeparator()
+        menu.addAction("Move to Group…").triggered.connect(
+            lambda: self.move_to_group_requested.emit(self.session.tab_id)
+        )
         menu.exec(e.globalPos())
 
     def _mark_unread(self):
@@ -1879,39 +1887,209 @@ class TabCard(QFrame):
             p.drawLine(0,y,self.width(),y); p.end()
 
 
-class TabBar(QWidget):
-    tab_selected=pyqtSignal(int); shift_tab_selected=pyqtSignal(int)
-    new_tab_clicked=pyqtSignal(); rename_requested=pyqtSignal(int)
-    close_requested=pyqtSignal(int); tabs_reordered=pyqtSignal(list)
+class GroupHeader(QWidget):
+    toggled    = pyqtSignal(str)          # group name
+    rename_req = pyqtSignal(str, str)     # old_name, new_name
+    delete_req = pyqtSignal(str)          # group name
 
-    def __init__(self,parent=None):
+    def __init__(self, name: str, parent=None):
+        super().__init__(parent)
+        self._name = name
+        self.setFixedHeight(26)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(6, 0, 8, 0); lay.setSpacing(4)
+        self._chevron = QLabel("▼")
+        self._chevron.setStyleSheet(f"color:{C_MUTED.name()};font-size:9px;background:transparent;")
+        self._name_lbl = QLabel(name)
+        self._name_lbl.setStyleSheet(f"color:{C_FG.name()};font-size:11px;font-weight:bold;background:transparent;")
+        self._count_lbl = QLabel("")
+        self._count_lbl.setStyleSheet(f"color:{C_MUTED.name()};font-size:10px;background:transparent;")
+        lay.addWidget(self._chevron)
+        lay.addWidget(self._name_lbl, 1)
+        lay.addWidget(self._count_lbl)
+        self.setStyleSheet(f"GroupHeader{{background:{C_PANEL.name()};border-bottom:1px solid {C_SURFACE.name()};}}")
+
+    def set_state(self, collapsed: bool, count: int):
+        self._chevron.setText("▶" if collapsed else "▼")
+        self._count_lbl.setText(str(count) if collapsed else "")
+
+    def rename(self, new_name: str):
+        self._name = new_name
+        self._name_lbl.setText(new_name)
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self.toggled.emit(self._name)
+
+    def contextMenuEvent(self, e):
+        menu = QMenu(self)
+        menu.addAction("Rename Group…").triggered.connect(self._do_rename)
+        if self._name != "General":
+            menu.addAction("Delete Group").triggered.connect(lambda: self.delete_req.emit(self._name))
+        menu.exec(e.globalPos())
+
+    def _do_rename(self):
+        from PyQt6.QtWidgets import QInputDialog
+        new, ok = QInputDialog.getText(self, "Rename Group", "Group name:", text=self._name)
+        if ok and new.strip() and new.strip() != self._name:
+            self.rename_req.emit(self._name, new.strip())
+
+
+class TabBar(QWidget):
+    tab_selected       = pyqtSignal(int)
+    shift_tab_selected = pyqtSignal(int)
+    new_tab_clicked    = pyqtSignal()
+    rename_requested   = pyqtSignal(int)
+    close_requested    = pyqtSignal(int)
+    tabs_reordered     = pyqtSignal(list)
+    group_changed      = pyqtSignal()   # any group mutation happened
+
+    def __init__(self, parent=None):
         super().__init__(parent); self.setFixedWidth(220)
         self.setStyleSheet(f"background:{C_PANEL.name()};")
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        ml=QVBoxLayout(self); ml.setContentsMargins(0,0,0,0); ml.setSpacing(0)
-        self._scroll=QScrollArea(); self._scroll.setWidgetResizable(True)
+        ml = QVBoxLayout(self); ml.setContentsMargins(0,0,0,0); ml.setSpacing(0)
+        self._scroll = QScrollArea(); self._scroll.setWidgetResizable(True)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._scroll.setStyleSheet("QScrollArea{border:none;}QScrollBar:vertical{width:4px;}QScrollBar::handle:vertical{background:#444;border-radius:2px;}")
-        self._cw=QWidget(); self._cw.setStyleSheet(f"background:{C_PANEL.name()};")
-        self._cl=QVBoxLayout(self._cw); self._cl.setContentsMargins(0,0,0,0); self._cl.setSpacing(0); self._cl.addStretch()
-        self._scroll.setWidget(self._cw); ml.addWidget(self._scroll,1)
-        btn=QPushButton("  +  New Terminal"); btn.setFixedHeight(34)
+        self._cw = QWidget(); self._cw.setStyleSheet(f"background:{C_PANEL.name()};")
+        self._cl = QVBoxLayout(self._cw); self._cl.setContentsMargins(0,0,0,0); self._cl.setSpacing(0); self._cl.addStretch()
+        self._scroll.setWidget(self._cw); ml.addWidget(self._scroll, 1)
+        btn = QPushButton("  +  New Terminal"); btn.setFixedHeight(34)
         btn.setStyleSheet(f"QPushButton{{background:{C_SURFACE.name()};color:{C_MUTED.name()};border:none;font-size:12px;text-align:left;padding-left:12px;}}QPushButton:hover{{background:{C_ACCENT.name()}22;color:{C_ACCENT.name()};}}")
         btn.clicked.connect(self.new_tab_clicked); ml.addWidget(btn)
-        self._card_map:Dict[int,TabCard]={}
-        self._kbd_idx:int=-1  # index of keyboard-focused card (-1 = none)
+        self._card_map: Dict[int, TabCard] = {}
+        self._header_map: Dict[str, GroupHeader] = {}
+        self._collapsed: set = set()
+        self._group_order: list = []   # ordered list of group names seen so far
+        self._sessions: dict = {}      # tid -> TermSession reference
+        self._kbd_idx: int = -1
 
-    def add_card(self,s:TermSession,cfg:CardConfig)->TabCard:
-        card=TabCard(s,cfg); card.clicked_signal.connect(self._on_card_clicked)
+    # ── group helpers ──────────────────────────────────────────────────────────
+    def _groups_from_sessions(self) -> Dict[str, list]:
+        groups: Dict[str, list] = {}
+        for name in self._group_order:
+            groups[name] = []
+        general_tids = []
+        for tid, s in self._sessions.items():
+            g = s.group.strip() if s.group else ""
+            if g:
+                groups.setdefault(g, [])
+                if g not in self._group_order:
+                    self._group_order.append(g)
+                    groups[g] = []
+                groups[g].append(tid)
+            else:
+                general_tids.append(tid)
+        groups = {k: v for k, v in groups.items() if v}
+        if general_tids:
+            if groups:
+                groups["General"] = general_tids
+            else:
+                groups[""] = general_tids  # single anonymous group
+        return groups
+
+    def rebuild_layout(self, sessions: dict):
+        self._sessions = sessions
+        groups = self._groups_from_sessions()
+        use_headers = len(groups) > 1 or (len(groups) == 1 and "" not in groups)
+
+        while self._cl.count() > 1:
+            item = self._cl.takeAt(0)
+            w = item.widget()
+            if w:
+                w.setParent(None)
+
+        pos = 0
+        for group_name, tids in groups.items():
+            collapsed = group_name in self._collapsed
+            if use_headers and group_name:
+                header = self._get_or_create_header(group_name)
+                header.set_state(collapsed, len(tids))
+                self._cl.insertWidget(pos, header); header.show(); pos += 1
+            for tid in tids:
+                card = self._card_map.get(tid)
+                if card:
+                    card.setVisible(not (use_headers and group_name and collapsed))
+                    self._cl.insertWidget(pos, card); card.show(); pos += 1
+
+    def _get_or_create_header(self, name: str) -> "GroupHeader":
+        if name not in self._header_map:
+            h = GroupHeader(name, self)
+            h.toggled.connect(self._toggle_group)
+            h.rename_req.connect(self._rename_group)
+            h.delete_req.connect(self._delete_group)
+            self._header_map[name] = h
+        return self._header_map[name]
+
+    def _toggle_group(self, name: str):
+        if name in self._collapsed:
+            self._collapsed.discard(name)
+        else:
+            self._collapsed.add(name)
+        self.rebuild_layout(self._sessions)
+
+    def _rename_group(self, old: str, new: str):
+        for s in self._sessions.values():
+            if (s.group or "").strip() == old:
+                s.group = new
+        if old in self._group_order:
+            idx = self._group_order.index(old)
+            self._group_order[idx] = new
+        if old in self._collapsed:
+            self._collapsed.discard(old); self._collapsed.add(new)
+        if old in self._header_map:
+            h = self._header_map.pop(old)
+            h.rename(new)
+            self._header_map[new] = h
+        self.rebuild_layout(self._sessions)
+        self.group_changed.emit()
+
+    def _delete_group(self, name: str):
+        for s in self._sessions.values():
+            if (s.group or "").strip() == name:
+                s.group = ""
+        if name in self._group_order:
+            self._group_order.remove(name)
+        self._collapsed.discard(name)
+        if name in self._header_map:
+            self._header_map.pop(name).deleteLater()
+        self.rebuild_layout(self._sessions)
+        self.group_changed.emit()
+
+    def move_to_group(self, tid: int):
+        s = self._sessions.get(tid)
+        if not s: return
+        from PyQt6.QtWidgets import QInputDialog
+        current = s.group or ""
+        name, ok = QInputDialog.getText(self, "Move to Group", "Group name (leave blank to ungroup):", text=current)
+        if not ok: return
+        s.group = name.strip()
+        if s.group and s.group not in self._group_order:
+            self._group_order.append(s.group)
+        self.rebuild_layout(self._sessions)
+        self.group_changed.emit()
+
+    # ── card management ────────────────────────────────────────────────────────
+    def add_card(self, s: TermSession, cfg: CardConfig) -> "TabCard":
+        card = TabCard(s, cfg)
+        card.clicked_signal.connect(self._on_card_clicked)
         card.shift_clicked_signal.connect(self.shift_tab_selected)
         card.rename_requested.connect(self.rename_requested)
         card.close_requested.connect(self.close_requested)
         card.reorder_requested.connect(self._handle_reorder)
-        self._card_map[s.tab_id]=card
-        self._cl.insertWidget(self._cl.count()-1,card); return card
+        card.move_to_group_requested.connect(self.move_to_group)
+        self._card_map[s.tab_id] = card
+        self._sessions[s.tab_id] = s
+        self.rebuild_layout(self._sessions)
+        return card
 
-    def remove_card(self,tid:int):
-        if card:=self._card_map.pop(tid,None): card.deleteLater()
+    def remove_card(self, tid: int):
+        if card := self._card_map.pop(tid, None):
+            card.deleteLater()
+        self._sessions.pop(tid, None)
+        self.rebuild_layout(self._sessions)
 
     def set_active(self, tid: int, secondary_tid: int = -1):
         for t, c in self._card_map.items():
@@ -1920,7 +2098,6 @@ class TabBar(QWidget):
 
     # ── keyboard navigation ────────────────────────────────────────────────────
     def _cards(self) -> list:
-        """Return TabCard widgets in layout order."""
         out = []
         for i in range(self._cl.count()):
             item = self._cl.itemAt(i)
@@ -1929,16 +2106,13 @@ class TabBar(QWidget):
         return out
 
     def _set_kbd_focus(self, idx: int):
-        """Move the keyboard cursor to card at layout index idx."""
         cards = self._cards()
         if not cards: return
         idx = max(0, min(idx, len(cards)-1))
-        # Clear previous
         if 0 <= self._kbd_idx < len(cards):
             cards[self._kbd_idx].mark_kbd_focus(False)
         self._kbd_idx = idx
         cards[idx].mark_kbd_focus(True)
-        # Scroll so focused card is visible
         self._scroll.ensureWidgetVisible(cards[idx])
 
     def _clear_kbd_focus(self):
@@ -1946,64 +2120,45 @@ class TabBar(QWidget):
         self._kbd_idx = -1
 
     def _on_card_clicked(self, tid: int):
-        """Card clicked — update kbd index to match and forward signal."""
         cards = self._cards()
         for i, c in enumerate(cards):
             if c.session.tab_id == tid:
-                self._kbd_idx = i
-                break
+                self._kbd_idx = i; break
         self.tab_selected.emit(tid)
 
     def mousePressEvent(self, e):
-        """Clicking anywhere in the sidebar gives it keyboard focus."""
-        self.setFocus()
-        super().mousePressEvent(e)
+        self.setFocus(); super().mousePressEvent(e)
 
     def focusOutEvent(self, e):
-        self._clear_kbd_focus()
-        super().focusOutEvent(e)
+        self._clear_kbd_focus(); super().focusOutEvent(e)
 
     def keyPressEvent(self, e):
-        K = Qt.Key
-        cards = self._cards()
-        if not cards:
-            super().keyPressEvent(e); return
+        K = Qt.Key; cards = self._cards()
+        if not cards: super().keyPressEvent(e); return
         if e.key() == K.Key_Down:
-            if self._kbd_idx < 0:
-                self._set_kbd_focus(0)
-            else:
-                self._set_kbd_focus(self._kbd_idx + 1)
+            self._set_kbd_focus(0 if self._kbd_idx < 0 else self._kbd_idx + 1)
         elif e.key() == K.Key_Up:
-            if self._kbd_idx < 0:
-                self._set_kbd_focus(len(cards)-1)
-            else:
-                self._set_kbd_focus(self._kbd_idx - 1)
+            self._set_kbd_focus(len(cards)-1 if self._kbd_idx < 0 else self._kbd_idx - 1)
         elif e.key() in (K.Key_Return, K.Key_Enter):
             if 0 <= self._kbd_idx < len(cards):
-                tid = cards[self._kbd_idx].session.tab_id
-                self.tab_selected.emit(tid)
+                self.tab_selected.emit(cards[self._kbd_idx].session.tab_id)
         elif e.key() == K.Key_Escape:
             self._clear_kbd_focus()
         else:
             super().keyPressEvent(e)
 
-    def refresh_card(self,tid:int):
-        if c:=self._card_map.get(tid): c.refresh()
+    def refresh_card(self, tid: int):
+        if c := self._card_map.get(tid): c.refresh()
 
-    def _handle_reorder(self,src_tid:int,target_tid:int,place_before:bool):
-        if src_tid==target_tid: return
-        src=self._card_map.get(src_tid); tgt=self._card_map.get(target_tid)
+    def _handle_reorder(self, src_tid: int, target_tid: int, place_before: bool):
+        if src_tid == target_tid: return
+        src = self._card_map.get(src_tid); tgt = self._card_map.get(target_tid)
         if not src or not tgt: return
-        self._cl.removeWidget(src)
-        tgt_idx=self._cl.indexOf(tgt)
-        insert_idx=tgt_idx if place_before else tgt_idx+1
-        self._cl.insertWidget(insert_idx,src)
-        order=[]
-        for i in range(self._cl.count()):
-            item=self._cl.itemAt(i)
-            w=item.widget() if item else None
-            if isinstance(w,TabCard): order.append(w.session.tab_id)
-        self.tabs_reordered.emit(order)
+        src_s = self._sessions.get(src_tid); tgt_s = self._sessions.get(target_tid)
+        if src_s and tgt_s:
+            src_s.group = tgt_s.group
+        self.rebuild_layout(self._sessions)
+        self.group_changed.emit()
 
 # ═════════════════════════════════════════════════════════════════════════════
 # TOP BAR / NOTIFICATION BANNER / HOTKEY BAR
@@ -3042,6 +3197,7 @@ class AIDEWindow(QMainWindow):
         self._tab_bar=TabBar()
         self._tab_bar.tab_selected.connect(self._on_tab_clicked)
         self._tab_bar.shift_tab_selected.connect(self._on_shift_tab_clicked)
+        self._tab_bar.group_changed.connect(self._save_session)
         self._tab_bar.new_tab_clicked.connect(lambda: self._new_tab())
         self._tab_bar.rename_requested.connect(self._rename_tab_by_id)
         self._tab_bar.close_requested.connect(self._close_tab_with_confirm)
