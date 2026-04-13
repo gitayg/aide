@@ -107,7 +107,7 @@ except ImportError:
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.7.5"
+VERSION      = "2.7.6"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -875,11 +875,10 @@ _EVENT_Q: queue.Queue = queue.Queue()
 
 class TermSession:
     _AI_PATS = [
-        (re.compile(r"Human:\s*$",re.M),          "Claude is waiting"),
-        (re.compile(r"\[y/n\]|\[Y/n\]|\[yes/no\]",re.I),"Waiting for confirmation"),
-        (re.compile(r"Press any key",re.I),        "Waiting for keypress"),
-        (re.compile(r">>>\s*$",re.M),              "Python REPL waiting"),
-        (re.compile(r"\?\s*$",re.M),               "Question / input needed"),
+        (re.compile(r"Human:\s*$",re.M),           "Claude is waiting"),
+        (re.compile(r"\[y/n\]|\[Y/n\]|\[yes/no\]",re.I), "Waiting for confirmation"),
+        (re.compile(r"Press any key",re.I),         "Waiting for keypress"),
+        (re.compile(r">>>\s*$",re.M),               "Python REPL waiting"),
     ]
     # Claude CLI exclusively uses braille block spinner characters (U+2800 range).
     # Virtually no other tool uses these, making them a near-zero false-positive signal.
@@ -1768,6 +1767,9 @@ class TabCard(QFrame):
                         lbl.setToolTip(full.replace("~",str(Path.home())) if full.startswith("~") else full)
                     else: lbl.setToolTip("")
                 else: lbl.setVisible(False); lbl.setToolTip("")
+        # Shrink card to fit visible rows
+        visible_rows = sum(1 for lbl in (self._lbl1,self._lbl2,self._lbl3) if lbl.isVisible())
+        self.setFixedHeight(32 + visible_rows * 15)
         self._apply_style()
 
     def mark_active(self, a: bool):
