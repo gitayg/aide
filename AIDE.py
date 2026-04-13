@@ -107,7 +107,7 @@ except ImportError:
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.7.4"
+VERSION      = "2.7.5"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -1785,10 +1785,13 @@ class TabCard(QFrame):
         visible  = getattr(self, "_visible",   False)   # shown in secondary split pane
         waiting  = getattr(self.session, "waiting_input",   False)
         blink_on = getattr(self, "_blink_phase", False)
-        # Left border: amber blink for waiting; orange for unread; accent blue for focused/visible; muted for kbd
+        # Title label: bold + bright when waiting for input, dimmed otherwise
         if waiting:
-            color = "#f0a500" if blink_on else "#7a4f00"
-        elif self._active or visible:
+            self._lbl0.setStyleSheet(f"color:{C_FG.name()};font-weight:bold;font-size:12px;background:transparent;")
+        else:
+            self._lbl0.setStyleSheet(f"color:{C_MUTED.name()};font-weight:normal;font-size:12px;background:transparent;")
+        # Left border: orange for unread; accent blue for focused/visible; muted for kbd
+        if self._active or visible:
             color = C_ACCENT.name()
         elif self._unread:
             color = "#e05c00"
