@@ -107,7 +107,7 @@ except ImportError:
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.7.2"
+VERSION      = "2.7.3"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -3290,10 +3290,18 @@ class AIDEWindow(QMainWindow):
         sb.addWidget(self._cwd_bar,1)
 
     # ── tab lifecycle ──────────────────────────────────────────────────────────
+    def _env_with_vars(self, session: "TermSession") -> dict:
+        """Merge config env_overrides with vault variables for this session."""
+        env = dict(self.config.env_overrides)
+        env.update(session.variables)   # vault vars take precedence
+        return env
+
     def _new_tab(self,title:str="")->int:
         tid=self._next_id; self._next_id+=1; s=TermSession(tid)
         if title: s.custom_title=title
-        self.sessions[tid]=s; s.start(self.config.shell or DEFAULT_SHELL,self.config.env_overrides)
+        if self._vault.is_unlocked():
+            s.variables = self._vault.get_vars(tid)
+        self.sessions[tid]=s; s.start(self.config.shell or DEFAULT_SHELL, self._env_with_vars(s))
         self._tab_bar.add_card(s,self.config.card); self._switch_to(tid); return tid
 
     def _close_tab(self,tid:int):
@@ -3836,10 +3844,29 @@ class AIDEWindow(QMainWindow):
         # Populate in-memory variables for every session from the vault
         for tid,s in self.sessions.items():
             s.variables=self._vault.get_vars(tid)
+            self._inject_vars_into_shell(s)
         self._notes_panel.set_vault_unlocked(True)
         # Refresh current tab's table
         if self.active_id>=0 and self.active_id in self.sessions:
             self._notes_panel.apply_variables(self.sessions[self.active_id].variables)
+
+    def _inject_vars_into_shell(self, s: "TermSession"):
+        """Silently export vault variables into an already-running shell.
+
+        Uses stty -echo so the export commands don't appear in the terminal
+        display and therefore aren't visible to any AI reading the screen.
+        """
+        if not s.alive or not s.variables: return
+        exports = "".join(
+            f"export {k}={v!r};" for k, v in s.variables.items() if k.isidentifier()
+        )
+        if not exports: return
+        # Suppress echo → run exports → restore echo, all in one write
+        payload = f"\nstty -echo; {exports} stty echo\n"
+        try:
+            s.write(payload.encode())
+        except Exception:
+            pass
 
     def _on_vault_lock_requested(self):
         # Capture current UI edits before locking
@@ -3912,7 +3939,7 @@ class AIDEWindow(QMainWindow):
             try:
                 tid=int(k); s=TermSession.from_dict(v,tid)
                 self.sessions[tid]=s; self._next_id=max(self._next_id,tid+1)
-                s.start(shell,self.config.env_overrides); self._tab_bar.add_card(s,self.config.card)
+                s.start(shell, self._env_with_vars(s)); self._tab_bar.add_card(s,self.config.card)
                 _log(f"loaded tab {k}: {s.custom_title!r}")
             except Exception as e:
                 _log_err(f"tab {k} load failed: {e}")
