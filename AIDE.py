@@ -107,7 +107,7 @@ except ImportError:
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.8.0"
+VERSION      = "2.8.1"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -910,7 +910,7 @@ class TermSession:
         self.master_fd=-1; self.pid=-1; self.alive=False; self.dirty=False
         self.last_out_time=0.0; self._notif_armed=False
         self._input_buf=bytearray(); self._output_tail=""
-        self.waiting_input=False; self.scroll_offset=0
+        self.waiting_input=False; self.scroll_offset=0; self.last_ping_time:float=0.0
         self.claude_resume_cmd:str=""; self.claude_working:bool=False; self.claude_thinking:bool=False
         self._ai_active_time:float=0.0   # last time working/thinking was detected
         self._thread:Optional[threading.Thread]=None
@@ -995,6 +995,7 @@ class TermSession:
         for pat,msg in self._AI_PATS:
             if pat.search(text):
                 self.waiting_input=True; self.claude_working=False; self.claude_thinking=False
+                self.last_ping_time=time.time()
                 if not was_waiting:
                     _EVENT_Q.put(("blink",self.tab_id,msg))
                     # Fire a notification on every fresh "waiting" event,
@@ -1741,8 +1742,16 @@ class TabCard(QFrame):
         watch_prefix="👁 " if s.watching else ""
         tags_prefix = "".join(f"[{t}]" for t in s.tags) + (" " if s.tags else "")
         self._lbl0.setText(f"{watch_prefix}{icon_prefix}{tags_prefix}{s.effective_title()}")
+        # Format last-ping time as relative string
+        _ping_str=""
+        if s.last_ping_time>0:
+            import datetime
+            delta=int(time.time()-s.last_ping_time)
+            if delta<60:     _ping_str=f"🕐 {delta}s ago"
+            elif delta<3600: _ping_str=f"🕐 {delta//60}m ago"
+            else:            _ping_str=f"🕐 {datetime.datetime.fromtimestamp(s.last_ping_time).strftime('%H:%M')}"
         _map={"cwd":("📁",i.cwd),"cmd":("$",i.last_cmd[:24] if i.last_cmd else ""),
-              "ssh":("⬡",i.ssh_host),"process":("⚙",i.process)}
+              "ssh":("⬡",i.ssh_host),"process":("⚙",i.process),"ping":("",_ping_str)}
         extra=[f for f in self.cfg.fields if f!="title"]
         # When agent is active, override the first info row with a status line
         if thinking or working:
