@@ -107,7 +107,7 @@ except ImportError:
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.2.0"
+VERSION      = "2.3.0"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -145,6 +145,11 @@ def _ping_pong_sound(tab_index: int = 0):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.3.0": [
+        ("🔒", "Config directory hardened",    "~/.aide/ permissions set to 0o700 — no other users can read your config"),
+        ("📋", "Clipboard file restricted",    "clipboard.json permissions set to 0o600 after each write"),
+        ("🧹", "Temp image cleanup",           "Pasted image temp files are deleted when the app closes"),
+    ],
     "2.2.0": [
         ("🎵", "Tab switch sounds",             "Each tab plays a unique ping-pong tick sound when selected"),
         ("🔄", "AIDE menu: Check for Updates",  "AIDE → Check for Updates manually triggers a git fetch + compare"),
@@ -182,6 +187,11 @@ CLIP_FILE       = CONFIG_DIR / "clipboard.json"
 VAULT_FILE      = CONFIG_DIR / "vault.enc"
 SCREENSHOTS_DIR = CONFIG_DIR / "screenshots"
 CONFIG_DIR.mkdir(exist_ok=True)
+try:
+    import os as _os
+    _os.chmod(CONFIG_DIR, 0o700)
+except OSError:
+    pass
 
 # ── One-time migration from ~/.nanoai → ~/.aide ───────────────────────────────
 def _migrate_nanoai():
@@ -512,7 +522,9 @@ class SharedClipboard:
     def all(self): return list(self._e)
     def get(self,i=0): return self._e[i] if i<len(self._e) else ""
     def _save(self):
-        try: CLIP_FILE.write_text(json.dumps(self._e))
+        try:
+            CLIP_FILE.write_text(json.dumps(self._e))
+            CLIP_FILE.chmod(0o600)
         except: pass
     def _load(self):
         try: self._e=json.loads(CLIP_FILE.read_text())
@@ -3577,6 +3589,14 @@ class AIDEWindow(QMainWindow):
         self._save_session()
         if self._vault.is_unlocked(): self._vault.flush()
         for s in self.sessions.values(): s.kill()
+        # Clean up temp image files created during this session
+        try:
+            import tempfile, shutil
+            tmp_dir = Path(tempfile.gettempdir()) / "aide_images"
+            if tmp_dir.exists():
+                shutil.rmtree(str(tmp_dir), ignore_errors=True)
+        except Exception:
+            pass
         event.accept()
 
 # ═════════════════════════════════════════════════════════════════════════════
