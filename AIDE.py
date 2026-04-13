@@ -107,7 +107,7 @@ except ImportError:
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.7.1"
+VERSION      = "2.7.2"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -1911,8 +1911,19 @@ class GroupHeader(QWidget):
         self.setStyleSheet(f"GroupHeader{{background:{C_PANEL.name()};border-bottom:1px solid {C_SURFACE.name()};}}")
 
     def set_state(self, collapsed: bool, count: int):
-        self._chevron.setText("▶" if collapsed else "▼")
-        self._count_lbl.setText(str(count) if collapsed else "")
+        if collapsed:
+            self._chevron.setText("▶")
+            self._name_lbl.setVisible(False)
+            self._count_lbl.setText(f"  {self._name}  ({count})")
+            self._count_lbl.setVisible(True)
+            self.setFixedHeight(14)
+            self.setStyleSheet(f"GroupHeader{{background:{C_SURFACE.name()};border-bottom:1px solid {C_PANEL.name()};border-top:1px solid {C_PANEL.name()};}}")
+        else:
+            self._chevron.setText("▼")
+            self._name_lbl.setVisible(True)
+            self._count_lbl.setVisible(False)
+            self.setFixedHeight(26)
+            self.setStyleSheet(f"GroupHeader{{background:{C_PANEL.name()};border-bottom:1px solid {C_SURFACE.name()};}}")
 
     def rename(self, new_name: str):
         self._name = new_name
@@ -2011,8 +2022,10 @@ class TabBar(QWidget):
             for tid in tids:
                 card = self._card_map.get(tid)
                 if card:
-                    card.setVisible(not (use_headers and group_name and collapsed))
-                    self._cl.insertWidget(pos, card); card.show(); pos += 1
+                    visible = not (use_headers and group_name and collapsed)
+                    self._cl.insertWidget(pos, card)
+                    card.setVisible(visible)
+                    pos += 1
 
     def _get_or_create_header(self, name: str) -> "GroupHeader":
         if name not in self._header_map:
