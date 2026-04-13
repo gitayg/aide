@@ -107,7 +107,7 @@ except ImportError:
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.7.6"
+VERSION      = "2.7.7"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -1969,6 +1969,22 @@ class TabBar(QWidget):
         self._scroll = QScrollArea(); self._scroll.setWidgetResizable(True)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._scroll.setStyleSheet("QScrollArea{border:none;}QScrollBar:vertical{width:4px;}QScrollBar::handle:vertical{background:#444;border-radius:2px;}")
+        # Unread filter bar
+        self._filter_bar = QWidget(); self._filter_bar.setFixedHeight(26)
+        self._filter_bar.setStyleSheet(f"background:{C_SURFACE.name()};")
+        fb_lay = QHBoxLayout(self._filter_bar); fb_lay.setContentsMargins(6,0,6,0); fb_lay.setSpacing(0)
+        self._unread_filter_btn = QPushButton("● Unread"); self._unread_filter_btn.setCheckable(True)
+        self._unread_filter_btn.setFixedHeight(20)
+        self._unread_filter_btn.setStyleSheet(
+            f"QPushButton{{background:transparent;color:{C_MUTED.name()};border:1px solid transparent;"
+            f"border-radius:3px;font-size:10px;padding:0 6px;}}"
+            f"QPushButton:hover{{color:{C_FG.name()};}}"
+            f"QPushButton:checked{{background:#e05c0033;color:#e05c00;border-color:#e05c00;}}"
+        )
+        self._unread_filter_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._unread_filter_btn.toggled.connect(self._on_unread_filter_toggled)
+        fb_lay.addWidget(self._unread_filter_btn); fb_lay.addStretch()
+        ml.addWidget(self._filter_bar)
         self._cw = QWidget(); self._cw.setStyleSheet(f"background:{C_PANEL.name()};")
         self._cl = QVBoxLayout(self._cw); self._cl.setContentsMargins(0,0,0,0); self._cl.setSpacing(0); self._cl.addStretch()
         self._scroll.setWidget(self._cw); ml.addWidget(self._scroll, 1)
@@ -1978,9 +1994,14 @@ class TabBar(QWidget):
         self._card_map: Dict[int, TabCard] = {}
         self._header_map: Dict[str, GroupHeader] = {}
         self._collapsed: set = set()
-        self._group_order: list = []   # ordered list of group names seen so far
-        self._sessions: dict = {}      # tid -> TermSession reference
+        self._group_order: list = []
+        self._sessions: dict = {}
         self._kbd_idx: int = -1
+        self._unread_filter: bool = False
+
+    def _on_unread_filter_toggled(self, checked: bool):
+        self._unread_filter = checked
+        self.rebuild_layout(self._sessions)
 
     # ── group helpers ──────────────────────────────────────────────────────────
     def _groups_from_sessions(self) -> Dict[str, list]:
@@ -2027,7 +2048,10 @@ class TabBar(QWidget):
             for tid in tids:
                 card = self._card_map.get(tid)
                 if card:
-                    visible = not (use_headers and group_name and collapsed)
+                    if self._unread_filter:
+                        visible = card._unread
+                    else:
+                        visible = not (use_headers and group_name and collapsed)
                     self._cl.insertWidget(pos, card)
                     card.setVisible(visible)
                     pos += 1
