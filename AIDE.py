@@ -1588,6 +1588,7 @@ class TabCard(QFrame):
     def __init__(self,session:TermSession,cfg:CardConfig,parent=None):
         super().__init__(parent)
         self.session=session; self.cfg=cfg; self._active=False
+        self._unread=False
         self._press_pos=None; self._drop_indicator=0  # -1 above, 0 none, 1 below
         self.setAcceptDrops(True)
         self.setFixedHeight(62); self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1595,7 +1596,15 @@ class TabCard(QFrame):
         title_row=QWidget(); title_row.setStyleSheet("background:transparent;")
         tr=QHBoxLayout(title_row); tr.setContentsMargins(0,0,0,0); tr.setSpacing(2)
         self._lbl0=QLabel(); self._lbl0.setStyleSheet(f"color:{C_FG.name()};font-weight:bold;font-size:12px;")
-        self._lbl0.setMaximumWidth(160); self._lbl0.setWordWrap(False); tr.addWidget(self._lbl0,1)
+        self._lbl0.setMaximumWidth(120); self._lbl0.setWordWrap(False); tr.addWidget(self._lbl0,1)
+        # Unread dot — orange ● shown when tab is marked unread
+        self._unread_dot=QLabel("●"); self._unread_dot.setFixedSize(12,12)
+        self._unread_dot.setStyleSheet("color:#f0a500;font-size:8px;background:transparent;")
+        self._unread_dot.setVisible(False); tr.addWidget(self._unread_dot)
+        # Task count badge — shown when the notes panel has tasks
+        self._task_badge=QLabel(); self._task_badge.setFixedHeight(14)
+        self._task_badge.setStyleSheet("color:#e6edf3;background:#1f6feb;border-radius:6px;font-size:9px;padding:0 4px;font-weight:bold;")
+        self._task_badge.setVisible(False); tr.addWidget(self._task_badge)
         close_btn=QPushButton("✕"); close_btn.setFixedSize(16,16)
         close_btn.setStyleSheet(f"QPushButton{{background:transparent;color:{C_MUTED.name()};border:none;font-size:10px;padding:0;}}QPushButton:hover{{color:#ff6b6b;background:{C_SURFACE.name()};border-radius:3px;}}")
         close_btn.setToolTip("Close terminal"); close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1615,6 +1624,14 @@ class TabCard(QFrame):
         thinking = getattr(s,"claude_thinking",False)
         working  = getattr(s,"claude_working",False)
         waiting  = getattr(s,"waiting_input",False)
+        # Task count badge
+        task_count = len([l for l in s.tasks.splitlines() if l.strip()]) if s.tasks else 0
+        if task_count>0:
+            self._task_badge.setText(str(task_count)); self._task_badge.setVisible(True)
+        else:
+            self._task_badge.setVisible(False)
+        # Unread dot
+        self._unread_dot.setVisible(self._unread)
         # Title icon: rotating gear when AI is active, app icon otherwise
         if thinking or working:
             frame=self._GEAR_FRAMES[getattr(self,"_gear_tick",0)%len(self._GEAR_FRAMES)]
@@ -1670,11 +1687,13 @@ class TabCard(QFrame):
         visible  = getattr(self, "_visible",   False)   # shown in secondary split pane
         waiting  = getattr(self.session, "waiting_input",   False)
         blink_on = getattr(self, "_blink_phase", False)
-        # Left border: amber blink for waiting; accent blue for focused/visible; muted for kbd
+        # Left border: amber blink for waiting; orange for unread; accent blue for focused/visible; muted for kbd
         if waiting:
             color = "#f0a500" if blink_on else "#7a4f00"
         elif self._active or visible:
             color = C_ACCENT.name()
+        elif self._unread:
+            color = "#e05c00"
         elif kbd:
             color = C_MUTED.name()
         else:
@@ -1686,7 +1705,28 @@ class TabCard(QFrame):
     def mousePressEvent(self,e):
         if e.button()==Qt.MouseButton.LeftButton:
             self._press_pos=e.pos()
-        self.clicked_signal.emit(self.session.tab_id)
+            self.clicked_signal.emit(self.session.tab_id)
+
+    def contextMenuEvent(self,e):
+        menu=QMenu(self)
+        if self._unread:
+            act=menu.addAction("Clear Unread")
+            act.triggered.connect(self._clear_unread)
+        else:
+            act=menu.addAction("Mark as Unread")
+            act.triggered.connect(self._mark_unread)
+        menu.exec(e.globalPos())
+
+    def _mark_unread(self):
+        self._unread=True
+        self._apply_style()
+        self._unread_dot.setVisible(True)
+
+    def _clear_unread(self):
+        self._unread=False
+        self._apply_style()
+        self._unread_dot.setVisible(False)
+
     def mouseDoubleClickEvent(self,e): self.rename_requested.emit(self.session.tab_id)
 
     def mouseMoveEvent(self,e):
@@ -2983,6 +3023,8 @@ class AIDEWindow(QMainWindow):
 
     def _switch_to(self,tid:int):
         if tid not in self.sessions: return
+        # Clear unread marker when user switches to a tab
+        if card:=self._tab_bar._card_map.get(tid): card._clear_unread()
         if tid != self.active_id:
             idx = list(self.sessions.keys()).index(tid) if tid in self.sessions else 0
             try: threading.Thread(target=_ping_pong_sound, args=(idx,), daemon=True).start()
