@@ -107,7 +107,7 @@ except ImportError:
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.5.1"
+VERSION      = "2.5.2"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -1736,7 +1736,7 @@ class TabCard(QFrame):
         # When agent is active, override the first info row with a status line
         if thinking or working:
             blink_on=getattr(self,"_blink_phase",False)
-            status_text="💭 AIDE thinking…" if thinking else "⚙ AIDE working…"
+            status_text="💭 Agent thinking…" if thinking else "⚙ Agent working…"
             status_color="#a5d6ff" if thinking else "#f0a500"
             visible_text=status_text if blink_on else status_text.replace("…","   ")
             self._lbl1.setText(visible_text)
