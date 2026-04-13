@@ -107,7 +107,7 @@ except ImportError:
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.3.0"
+VERSION      = "2.4.0"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -145,6 +145,10 @@ def _ping_pong_sound(tab_index: int = 0):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.4.0": [
+        ("🔴", "Mark as Unread",   "Right-click any tab → Mark as Unread; orange dot + border until you return"),
+        ("🔢", "Task count badge", "Blue pill on tab card shows number of tasks in that tab's notes panel"),
+    ],
     "2.3.0": [
         ("🔒", "Config directory hardened",    "~/.aide/ permissions set to 0o700 — no other users can read your config"),
         ("📋", "Clipboard file restricted",    "clipboard.json permissions set to 0o600 after each write"),
