@@ -106,12 +106,13 @@ except ImportError:
 from dashboard import DashboardServer, local_ip
 
 DASHBOARD_PORT = 8765
+GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 
 # ═════════════════════════════════════════════════════════════════════════════
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.9.3"
+VERSION      = "2.9.4"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -230,6 +231,10 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.9.4": [
+        ("↻", "GitHub update check", "Update detection now fetches version from GitHub directly; clicking Update downloads and applies the latest AIDE.py automatically"),
+        ("A±", "Font buttons moved", "A- and A+ buttons are now next to the main ribbon on the left"),
+    ],
     "2.9.3": [
         ("⣾", "Spinner icon", "Animated braille spinner replaces the static icon when Claude is working or thinking"),
     ],
@@ -2285,11 +2290,7 @@ class HotkeyBar(QWidget):
             btn.setToolTip(f"{label}  ({shortcut})")
             self._btn_map[action]=btn
             lay.addWidget(btn)
-        lay.addStretch()
-        self._info=QLabel(f"  {APP_NAME} v{VERSION}")
-        self._info.setStyleSheet(f"color:{C_MUTED.name()};font-size:11px;background:transparent;border:none;")
-        lay.addWidget(self._info)
-        # ── font-size ± buttons (compact, no shortcut row needed) ────────────
+        # ── font-size ± buttons — left side, next to the ribbon ──────────────
         self._cur_font=FONT_SIZE
         _fs=f"QPushButton{{background:{C_SURFACE.name()};color:{C_FG.name()};font-weight:bold;"\
             f"font-size:13px;border:none;border-radius:3px;padding:0 6px;min-width:28px;}}"\
@@ -2303,16 +2304,20 @@ class HotkeyBar(QWidget):
         self._btn_font_inc.setCursor(Qt.CursorShape.PointingHandCursor)
         self._btn_font_inc.clicked.connect(lambda: self._bump_font(+1))
         lay.addWidget(self._btn_font_dec); lay.addWidget(self._btn_font_inc)
-        # ── update button (hidden until AIDE.py changes on disk) ───────────
+        lay.addStretch()
+        self._info=QLabel(f"  {APP_NAME} v{VERSION}")
+        self._info.setStyleSheet(f"color:{C_MUTED.name()};font-size:11px;background:transparent;border:none;")
+        lay.addWidget(self._info)
+        # ── update button (hidden until GitHub has a newer version) ──────────
         self._update_btn=QPushButton("↻  Update")
         self._update_btn.setFixedHeight(32)
         self._update_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._update_btn.setVisible(False)
         self._update_btn.setStyleSheet(
-            "QPushButton{background:#b8860b;color:#fff8dc;font-weight:bold;font-size:11px;"
+            "QPushButton{background:#1f6feb;color:#fff;font-weight:bold;font-size:11px;"
             "border:none;border-radius:3px;padding:0 10px;}"
-            "QPushButton:hover{background:#e6b800;color:#0d1117;}")
-        self._update_btn.setToolTip("AIDE.py changed on disk — click to restart and apply")
+            "QPushButton:hover{background:#388bfd;color:#fff;}")
+        self._update_btn.setToolTip("New version available on GitHub — click to download & restart")
         self._update_btn.clicked.connect(self.restart_requested)
         lay.addWidget(self._update_btn)
 
@@ -2325,14 +2330,16 @@ class HotkeyBar(QWidget):
     def set_btn_active(self,action:str,on:bool):
         if btn:=self._btn_map.get(action): btn.set_active(on)
 
-    def mark_update_available(self,on:bool):
+    def mark_update_available(self, on: bool, remote_ver: str = ""):
         self._update_btn.setVisible(on)
-        if on:
-            # Pulse yellow to draw attention
-            self._update_btn.setStyleSheet(
-                "QPushButton{background:#e6b800;color:#0d1117;font-weight:bold;font-size:11px;"
-                "border:none;border-radius:3px;padding:0 10px;}"
-                "QPushButton:hover{background:#ffd000;color:#0d1117;}")
+        if on and remote_ver:
+            self._update_btn.setText(f"↻  v{remote_ver}")
+            self._update_btn.setToolTip(f"AIDE v{remote_ver} available on GitHub — click to download & restart")
+            self._info.setText(f"  v{VERSION} → v{remote_ver}")
+            self._info.setStyleSheet(f"color:{C_ACCENT.name()};font-size:11px;background:transparent;border:none;font-weight:bold;")
+        elif not on:
+            self._info.setText(f"  {APP_NAME} v{VERSION}")
+            self._info.setStyleSheet(f"color:{C_MUTED.name()};font-size:11px;background:transparent;border:none;")
 
 # ═════════════════════════════════════════════════════════════════════════════
 # NOTES PANEL  &  BROWSE PANE
@@ -3496,11 +3503,10 @@ class AIDEWindow(QMainWindow):
             except queue.Empty: break
             if ev[0]=="notif": self._show_notif(ev[1],ev[2],ev[3])
             elif ev[0]=="blink": QApplication.alert(self,3000)
-            elif ev[0]=="git_update" and not self._update_pending:
+            elif ev[0]=="github_update" and not self._update_pending:
                 self._update_pending=True
-                self._hotkey_bar.mark_update_available(True)
-                n=ev[1]; self._hotkey_bar._update_btn.setToolTip(
-                    f"{n} new commit{'s' if n!=1 else ''} on origin — click to pull & restart")
+                remote_ver=ev[1]
+                self._hotkey_bar.mark_update_available(True, remote_ver)
             elif ev[0]=="git_up_to_date":
                 QMessageBox.information(self,"Check for Updates",
                     f"{APP_NAME} v{VERSION} is up to date.")
@@ -3673,30 +3679,32 @@ class AIDEWindow(QMainWindow):
             dlg.exec()
 
     def _check_for_update(self):
-        # ── git remote check (once per session, background) ───────────────────
-        if getattr(self,"_git_update_checked",False): return
-        self._git_update_checked=True
-        threading.Thread(target=self._check_git_update,daemon=True).start()
+        if getattr(self, "_git_update_checked", False): return
+        self._git_update_checked = True
+        threading.Thread(target=self._check_github_update, daemon=True).start()
 
-    def _check_git_update(self, manual:bool=False):
+    def _check_github_update(self, manual: bool = False):
         try:
-            repo=str(self._script_path.parent)
-            subprocess.run(["git","fetch","--quiet"],cwd=repo,
-                           capture_output=True,timeout=10)
-            r=subprocess.run(["git","log","HEAD..origin/HEAD","--oneline"],
-                             cwd=repo,capture_output=True,text=True,timeout=5)
-            if r.stdout.strip():
-                _EVENT_Q.put(("git_update",len(r.stdout.strip().splitlines())))
+            req = Request(GITHUB_RAW_URL, headers={"User-Agent": f"AIDE/{VERSION}"})
+            with urlopen(req, timeout=10) as r:
+                chunk = r.read(300).decode("utf-8", errors="ignore")
+            m = re.search(r'VERSION\s*=\s*"([^"]+)"', chunk)
+            if not m:
+                return
+            remote_ver = m.group(1)
+            if _ver_tuple(remote_ver) > _ver_tuple(VERSION):
+                _EVENT_Q.put(("github_update", remote_ver))
             elif manual:
-                _EVENT_Q.put(("git_up_to_date",None))
-        except: pass
+                _EVENT_Q.put(("git_up_to_date", None))
+        except Exception:
+            pass
 
     def _manual_check_update(self):
         """Triggered from the AIDE menu → Check for Updates."""
-        self._update_pending=False          # allow re-notification
-        self._git_update_checked=False      # allow re-check
+        self._update_pending = False
+        self._git_update_checked = False
         self._hotkey_bar.mark_update_available(False)
-        threading.Thread(target=self._check_git_update,args=(True,),daemon=True).start()
+        threading.Thread(target=self._check_github_update, args=(True,), daemon=True).start()
 
     def _show_about(self):
         QMessageBox.about(self, f"About {APP_NAME}",
@@ -3707,10 +3715,14 @@ class AIDEWindow(QMainWindow):
     def _do_restart(self):
         self._save_session()
         try:
-            subprocess.run(["git","pull","--quiet"],cwd=str(self._script_path.parent),
-                           capture_output=True,timeout=30)
-        except: pass
-        os.execv(sys.executable,[sys.executable]+sys.argv)
+            req = Request(GITHUB_RAW_URL, headers={"User-Agent": f"AIDE/{VERSION}"})
+            with urlopen(req, timeout=30) as r:
+                data = r.read()
+            self._script_path.write_bytes(data)
+        except Exception as e:
+            QMessageBox.warning(self, "Update Failed", f"Could not download update:\n{e}")
+            return
+        os.execv(sys.executable, [sys.executable] + sys.argv)
 
     def _action_toggle_notes(self):
         self._notes_vis=not self._notes_vis; self._notes_panel.setVisible(self._notes_vis)
