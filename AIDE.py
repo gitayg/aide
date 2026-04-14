@@ -112,7 +112,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.9.5"
+VERSION      = "2.9.6"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -234,6 +234,9 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.9.6": [
+        ("⊟", "Focused pane header", "Active split pane header glows blue; clicking any tab card replaces that pane's session"),
+    ],
     "2.9.5": [
         ("🏓", "Tab smash sound", "Pressing Tab in split mode plays a ping-pong smash — with selection sends text to the other pane, without selection swaps focus"),
     ],
@@ -3195,7 +3198,8 @@ class AIDEWindow(QMainWindow):
         self._browsers:Dict[int,BrowsePane]={}
         self._next_id=0; self.active_id=-1
         self._split_mode="none"; self._secondary_id=-1
-        self._split_picking=False  # waiting for the user to click a tab to split with
+        self._split_picking=False
+        self._focused_pane="main"  # "main" or "secondary" — which pane last had keyboard focus
         self._notes_vis=True; self._last_notif:Optional[tuple]=None
         self._cb=SharedClipboard()
         self._vault=SecureVault()
@@ -3322,6 +3326,7 @@ class AIDEWindow(QMainWindow):
         self._main_splitter.setStretchFactor(0,1); self._main_splitter.setStretchFactor(1,0)
         ml.addWidget(self._main_splitter,1)
         root.addWidget(mid,1)
+        QApplication.instance().focusChanged.connect(self._on_focus_changed)
         sb=self.statusBar(); sb.setFixedHeight(22)
         sb.setStyleSheet(f"QStatusBar{{background:{C_PANEL.name()};color:{C_MUTED.name()};border-top:1px solid {C_SURFACE.name()};font-family:{FONT_FAMILY};font-size:11px;padding:0 8px;}}QStatusBar::item{{border:none;}}")
         self._cwd_bar=QLabel(); self._cwd_bar.setStyleSheet(f"color:{C_MUTED.name()};font-size:11px;background:transparent;padding:0;")
@@ -3455,19 +3460,36 @@ class AIDEWindow(QMainWindow):
         self._tab_bar.add_card(s,self.config.card)
         self._secondary_terminal.set_session(s); return tid
 
+    _HDR_FOCUSED  = f"background:{C_ACCENT.name()};color:#000;font-weight:600;font-size:11px;font-family:'JetBrains Mono',monospace;padding:0 8px;border-bottom:1px solid {C_ACCENT.name()};"
+    _HDR_UNFOCUSED= f"background:{C_SURFACE.name()};color:{C_MUTED.name()};font-size:11px;font-family:'JetBrains Mono',monospace;padding:0 8px;border-bottom:1px solid #30363d;"
+
     def _update_split_headers(self):
         """Show/update the name labels above each pane in terminal split mode."""
         active = self._split_mode == "terminal"
         self._main_header.setVisible(active)
+        self._secondary_header.setVisible(active)
         if not active:
             return
         def _label(session):
             if not session: return "—"
-            icon = "🤖" if (getattr(session,"claude_thinking",False) or getattr(session,"claude_working",False)) else ""
             title = session.effective_title()
-            return f"  {icon + ' ' if icon else ''}{title}"
+            return f"  {title}"
         self._main_header.setText(_label(self._main_terminal.session))
         self._secondary_header.setText(_label(self._secondary_terminal.session))
+        main_focused = self._focused_pane == "main"
+        self._main_header.setStyleSheet(self._HDR_FOCUSED if main_focused else self._HDR_UNFOCUSED)
+        self._secondary_header.setStyleSheet(self._HDR_FOCUSED if not main_focused else self._HDR_UNFOCUSED)
+
+    def _on_focus_changed(self, _old, new):
+        """Track which split pane last received keyboard focus."""
+        if self._split_mode != "terminal": return
+        w = new
+        while w:
+            if w is self._main_terminal:
+                self._focused_pane = "main"; self._update_split_headers(); return
+            if w is self._secondary_terminal:
+                self._focused_pane = "secondary"; self._update_split_headers(); return
+            w = w.parent() if callable(getattr(w, "parent", None)) else None
 
     def _split_paste_to_secondary(self, text: str):
         """Tab-paste: main → secondary."""
@@ -3789,15 +3811,23 @@ class AIDEWindow(QMainWindow):
     def _action_split_browse(self): self._set_split("browse")
 
     def _on_tab_clicked(self,tid:int):
-        """Tab-bar click handler. Routes to either split-pick or normal switch."""
+        """Tab-bar click handler. Routes to split-pick, focused-pane replace, or normal switch."""
         if self._split_picking:
             self._split_picking=False
             self._update_split_picking_ui()
             if tid in self.sessions and tid != self.active_id:
-                # Reuse the picked tab as the secondary pane (don't create a new one).
                 self._secondary_id=tid
                 self._set_split("terminal")
             return
+        # In split-terminal mode: clicking a card replaces whichever pane is focused
+        if self._split_mode == "terminal" and tid in self.sessions:
+            if self._focused_pane == "secondary":
+                self._secondary_id = tid
+                self._secondary_terminal.set_session(self.sessions[tid])
+                self._tab_bar.set_active(self.active_id, self._secondary_id)
+                self._update_split_headers()
+                self._secondary_terminal.setFocus()
+                return
         self._switch_to(tid)
 
     def _on_shift_tab_clicked(self, tid: int):
