@@ -103,11 +103,15 @@ try:
 except ImportError:
     _HAS_WEBENGINE = False
 
+from dashboard import DashboardServer, local_ip
+
+DASHBOARD_PORT = 8765
+
 # ═════════════════════════════════════════════════════════════════════════════
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.8.1"
+VERSION      = "2.9.3"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -226,6 +230,16 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.9.3": [
+        ("⣾", "Spinner icon", "Animated braille spinner replaces the static icon when Claude is working or thinking"),
+    ],
+    "2.9.0": [
+        ("📱", "Mobile dashboard", "Open http://<your-mac-ip>:8765 on your phone — live session cards, status dots, last output, and quick-reply for waiting agents. URL shown in the sidebar footer."),
+        ("🏷", "Tag accent color", "Tags on tab cards are now shown in accent blue"),
+        ("↕",  "Drag-and-drop reorder", "Drag tab cards to reorder them in the sidebar"),
+        ("✦",  "Bold when waiting", "Terminal title is bold when Claude is waiting for input"),
+        ("▲",  "No-command indicator", "Orange triangle on cards with no startup command configured"),
+    ],
     "2.8.0": [
         ("🏷", "Tags replace groups", "Right-click tab → Edit Tags…; tags shown as [tag] before title; click tag pill in sidebar to filter"),
     ],
@@ -431,10 +445,12 @@ class NotifConfig:
 
 @dataclass
 class CardConfig:
-    fields: List[str] = field(default_factory=lambda: ["title","cwd","cmd"])
+    fields:    List[str] = field(default_factory=lambda: ["title","cwd","cmd"])
+    show_tags: bool      = True
     def to_dict(self):  return asdict(self)
     @classmethod
-    def from_dict(cls, d): return cls(fields=d.get("fields",["title","cwd","cmd"]))
+    def from_dict(cls, d): return cls(fields=d.get("fields",["title","cwd","cmd"]),
+                                      show_tags=d.get("show_tags",True))
 
 @dataclass
 class AppConfig:
@@ -1177,9 +1193,9 @@ class ScreenshotOverlay(QWidget):
 
 class TerminalWidget(QWidget):
     prefix_action  = pyqtSignal(str)
-    # Emitted when Tab is pressed while text is selected in split-terminal mode.
-    # Carries the selected text so the other pane can paste it.
     split_tab_paste = pyqtSignal(str)
+    # Emitted when the user sends Enter to a session that was in waiting_input state
+    sent_to_waiting = pyqtSignal()
 
     _PREFIX_MAP = {
         Qt.Key.Key_N:"new_tab",         Qt.Key.Key_W:"close_tab",
@@ -1497,8 +1513,11 @@ class TerminalWidget(QWidget):
             self._sel_start=None; self._sel_end=None; self.update()
         data=qt_key_to_bytes(event)
         if data and self.session:
+            was_waiting = self.session.waiting_input
             self.session.scroll_offset=0  # scroll to bottom on any keypress
             self.session.write(data)
+            if was_waiting and (b'\r' in data or b'\n' in data):
+                self.sent_to_waiting.emit()
 
     def _pos_to_cell(self, pos) -> tuple:
         return (max(0, min(int(pos.x()/self._cw), (self.session.screen.columns if self.session else 80)-1)),
@@ -1688,19 +1707,32 @@ class TabCard(QFrame):
     def __init__(self,session:TermSession,cfg:CardConfig,parent=None):
         super().__init__(parent)
         self.session=session; self.cfg=cfg; self._active=False
-        self._unread=False
+        self._unread=False; self._left_color=QColor("transparent")
         self._press_pos=None; self._drop_indicator=0  # -1 above, 0 none, 1 below
         self.setAcceptDrops(True)
         self.setFixedHeight(62); self.setCursor(Qt.CursorShape.PointingHandCursor)
+        # Left 3 px is reserved for the status bar drawn in paintEvent; content starts at 5px
         lay=QVBoxLayout(self); lay.setContentsMargins(8,4,4,4); lay.setSpacing(1)
         title_row=QWidget(); title_row.setStyleSheet("background:transparent;")
-        tr=QHBoxLayout(title_row); tr.setContentsMargins(0,0,0,0); tr.setSpacing(2)
-        self._lbl0=QLabel(); self._lbl0.setStyleSheet(f"color:{C_FG.name()};font-weight:bold;font-size:12px;")
-        self._lbl0.setMaximumWidth(120); self._lbl0.setWordWrap(False); tr.addWidget(self._lbl0,1)
+        tr=QHBoxLayout(title_row); tr.setContentsMargins(0,0,0,0); tr.setSpacing(4)
+        # Fixed-width icon slot so title text always starts at the same column
+        self._icon_lbl=QLabel(); self._icon_lbl.setFixedWidth(16)
+        self._icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._icon_lbl.setStyleSheet("color:#8b949e;font-size:11px;background:transparent;")
+        tr.addWidget(self._icon_lbl)
+        self._lbl0=QLabel(); self._lbl0.setStyleSheet(f"color:{C_FG.name()};font-size:12px;")
+        self._lbl0.setAlignment(Qt.AlignmentFlag.AlignLeft|Qt.AlignmentFlag.AlignVCenter)
+        self._lbl0.setMinimumWidth(0); self._lbl0.setWordWrap(False); tr.addWidget(self._lbl0,1)
         # Unread dot — orange ● shown when tab is marked unread
         self._unread_dot=QLabel("●"); self._unread_dot.setFixedSize(12,12)
         self._unread_dot.setStyleSheet("color:#f0a500;font-size:8px;background:transparent;")
         self._unread_dot.setVisible(False); tr.addWidget(self._unread_dot)
+        # No-command warning triangle — red ▲ when no autostart_cmd is set
+        self._no_cmd_tri=QLabel("▲"); self._no_cmd_tri.setFixedSize(10,10)
+        self._no_cmd_tri.setStyleSheet("color:#e05c00;font-size:7px;background:transparent;")
+        self._no_cmd_tri.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._no_cmd_tri.setToolTip("No startup command configured")
+        self._no_cmd_tri.setVisible(False); tr.addWidget(self._no_cmd_tri)
         # Task count badge — shown when the notes panel has tasks
         self._task_badge=QLabel(); self._task_badge.setFixedHeight(14)
         self._task_badge.setStyleSheet("color:#e6edf3;background:#1f6feb;border-radius:6px;font-size:9px;padding:0 4px;font-weight:bold;")
@@ -1717,13 +1749,15 @@ class TabCard(QFrame):
             lbl.setMaximumWidth(190); lbl.setWordWrap(False); lay.addWidget(lbl)
         self.refresh()
 
-    _GEAR_FRAMES=("◐","◓","◑","◒")
+    _SPIN_FRAMES=("⣾","⣽","⣻","⢿","⡿","⣟","⣯","⣷")  # braille spinner, 8 frames
 
     def refresh(self):
         s=self.session; i=s.info
         thinking = getattr(s,"claude_thinking",False)
         working  = getattr(s,"claude_working",False)
         waiting  = getattr(s,"waiting_input",False)
+        # No-command warning triangle
+        self._no_cmd_tri.setVisible(not bool(s.autostart_cmd))
         # Task count badge
         task_count = len([l for l in s.tasks.splitlines() if l.strip()]) if s.tasks else 0
         if task_count>0:
@@ -1732,16 +1766,21 @@ class TabCard(QFrame):
             self._task_badge.setVisible(False)
         # Unread dot
         self._unread_dot.setVisible(self._unread)
-        # Title icon: rotating gear when AI is active, app icon otherwise
+        # Icon label (fixed-width slot): spinner when active, watch eye, or app icon
         if thinking or working:
-            frame=self._GEAR_FRAMES[getattr(self,"_gear_tick",0)%len(self._GEAR_FRAMES)]
-            icon_prefix=f"{frame} "
+            self._icon_lbl.setText(self._SPIN_FRAMES[getattr(self,"_gear_tick",0)%len(self._SPIN_FRAMES)])
+        elif s.watching:
+            self._icon_lbl.setText("👁")
         else:
-            icon=_app_icon(i.last_cmd)
-            icon_prefix=f"{icon} " if icon else ""
-        watch_prefix="👁 " if s.watching else ""
-        tags_prefix = "".join(f"[{t}]" for t in s.tags) + (" " if s.tags else "")
-        self._lbl0.setText(f"{watch_prefix}{icon_prefix}{tags_prefix}{s.effective_title()}")
+            self._icon_lbl.setText(_app_icon(i.last_cmd) or "")
+        # Title label: tags (accent, optional) + title text
+        _acc = C_ACCENT.name()
+        show_tags = getattr(self.cfg, "show_tags", True)
+        tags_html = ""
+        if show_tags and s.tags:
+            tags_html = "".join(f'<span style="color:{_acc};font-size:10px">[{t}]</span>' for t in s.tags) + " "
+        plain = s.effective_title()
+        self._lbl0.setText(f"{tags_html}{plain}" if tags_html else plain)
         # Format last-ping time as relative string
         _ping_str=""
         if s.last_ping_time>0:
@@ -1800,22 +1839,22 @@ class TabCard(QFrame):
         waiting  = getattr(self.session, "waiting_input",   False)
         blink_on = getattr(self, "_blink_phase", False)
         # Title label: bold + bright when waiting for input, dimmed otherwise
-        if waiting:
-            self._lbl0.setStyleSheet(f"color:{C_FG.name()};font-weight:bold;font-size:12px;background:transparent;")
-        else:
-            self._lbl0.setStyleSheet(f"color:{C_MUTED.name()};font-weight:normal;font-size:12px;background:transparent;")
-        # Left border: orange for unread; accent blue for focused/visible; muted for kbd
+        fg = C_FG.name() if waiting else C_MUTED.name()
+        self._lbl0.setStyleSheet(f"color:{fg};font-size:12px;background:transparent;")
+        f = self._lbl0.font(); f.setBold(waiting); self._lbl0.setFont(f)
+        # Left accent bar — drawn in paintEvent to avoid QFrame CSS border artifacts
         if self._active or visible:
-            color = C_ACCENT.name()
+            self._left_color = C_ACCENT
         elif self._unread:
-            color = "#e05c00"
+            self._left_color = QColor("#e05c00")
         elif kbd:
-            color = C_MUTED.name()
+            self._left_color = C_MUTED
         else:
-            color = "transparent"
+            self._left_color = QColor("transparent")
         bg    = "#1f2d3d" if self._active else C_SURFACE.name() if (visible or kbd) else C_PANEL.name()
         hover = "" if (self._active or visible or kbd) else f"QFrame:hover{{background:{C_SURFACE.name()};}}"
-        self.setStyleSheet(f"QFrame{{background:{bg};border-left:3px solid {color};}}{hover}")
+        self.setStyleSheet(f"QFrame{{background:{bg};border:none;}}{hover}")
+        self.update()
 
     def mousePressEvent(self,e):
         if e.button()==Qt.MouseButton.LeftButton:
@@ -1860,13 +1899,13 @@ class TabCard(QFrame):
     def mouseMoveEvent(self,e):
         if not (e.buttons() & Qt.MouseButton.LeftButton): return
         if self._press_pos is None: return
-        if (e.pos()-self._press_pos).manhattanLength()<QApplication.startDragDistance(): return
+        if (e.pos()-self._press_pos).manhattanLength()<max(QApplication.startDragDistance(),4): return
+        pos=self._press_pos; self._press_pos=None  # clear before exec to avoid re-entry
         drag=QDrag(self); mime=QMimeData()
         mime.setData(self._MIME_TYPE,str(self.session.tab_id).encode())
         drag.setMimeData(mime)
-        pm=self.grab(); drag.setPixmap(pm); drag.setHotSpot(e.pos())
-        drag.exec(Qt.DropAction.MoveAction)
-        self._press_pos=None
+        pm=self.grab(); drag.setPixmap(pm); drag.setHotSpot(pos)
+        drag.exec(Qt.DropAction.MoveAction|Qt.DropAction.CopyAction)
 
     def dragEnterEvent(self,ev):
         md=ev.mimeData()
@@ -1904,10 +1943,16 @@ class TabCard(QFrame):
 
     def paintEvent(self,ev):
         super().paintEvent(ev)
+        p=QPainter(self)
+        # Left status bar (3 px)
+        if self._left_color.alpha()>0:
+            p.fillRect(0, 0, 3, self.height(), self._left_color)
+        # Drop indicator line
         if self._drop_indicator!=0:
-            p=QPainter(self); p.setPen(QPen(C_ACCENT,2))
+            p.setPen(QPen(C_ACCENT,2))
             y=0 if self._drop_indicator<0 else self.height()-1
-            p.drawLine(0,y,self.width(),y); p.end()
+            p.drawLine(0,y,self.width(),y)
+        p.end()
 
 
 
@@ -1944,17 +1989,40 @@ class TabBar(QWidget):
         fb_lay.addWidget(self._unread_filter_btn); fb_lay.addStretch()
         ml.addWidget(self._filter_bar)
         self._cw = QWidget(); self._cw.setStyleSheet(f"background:{C_PANEL.name()};")
+        self._cw.setAcceptDrops(True)   # required so Qt hit-tests children during drag
         self._cl = QVBoxLayout(self._cw); self._cl.setContentsMargins(0,0,0,0); self._cl.setSpacing(0); self._cl.addStretch()
         self._scroll.setWidget(self._cw); ml.addWidget(self._scroll, 1)
         btn = QPushButton("  +  New Terminal"); btn.setFixedHeight(34)
         btn.setStyleSheet(f"QPushButton{{background:{C_SURFACE.name()};color:{C_MUTED.name()};border:none;font-size:12px;text-align:left;padding-left:12px;}}QPushButton:hover{{background:{C_ACCENT.name()}22;color:{C_ACCENT.name()};}}")
         btn.clicked.connect(self.new_tab_clicked); ml.addWidget(btn)
+        # Dashboard footer
+        self._dash_footer = QWidget(); self._dash_footer.setFixedHeight(28)
+        self._dash_footer.setStyleSheet(f"background:{C_SURFACE.name()};border-top:1px solid #21262d;")
+        df = QHBoxLayout(self._dash_footer); df.setContentsMargins(8,0,6,0); df.setSpacing(4)
+        self._dash_lbl = QLabel("📱"); self._dash_lbl.setStyleSheet(f"color:{C_MUTED.name()};font-size:10px;background:transparent;")
+        self._dash_url = QLabel("—"); self._dash_url.setStyleSheet(f"color:{C_MUTED.name()};font-size:10px;background:transparent;")
+        self._dash_url.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._dash_copy = QPushButton("Copy"); self._dash_copy.setFixedHeight(18)
+        self._dash_copy.setStyleSheet(f"QPushButton{{background:transparent;color:{C_MUTED.name()};border:1px solid #30363d;border-radius:3px;font-size:9px;padding:0 5px;}}QPushButton:hover{{color:{C_FG.name()};border-color:{C_ACCENT.name()};}}")
+        self._dash_copy.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._dash_copy.clicked.connect(self._copy_dash_url)
+        df.addWidget(self._dash_lbl); df.addWidget(self._dash_url, 1); df.addWidget(self._dash_copy)
+        ml.addWidget(self._dash_footer)
         self._card_map: Dict[int, TabCard] = {}
         self._sessions: dict = {}
         self._kbd_idx: int = -1
         self._unread_filter: bool = False
         self._tag_filter: str = ""
         self._tag_pills: dict = {}
+
+    def set_dashboard_url(self, url: str):
+        self._dash_url.setText(url)
+        self._dash_url.setToolTip(url)
+
+    def _copy_dash_url(self):
+        QApplication.clipboard().setText(self._dash_url.text())
+        self._dash_copy.setText("✓")
+        QTimer.singleShot(1500, lambda: self._dash_copy.setText("Copy"))
 
     def _on_unread_filter_toggled(self, checked: bool):
         self._unread_filter = checked
@@ -2097,9 +2165,20 @@ class TabBar(QWidget):
 
     def _handle_reorder(self, src_tid: int, target_tid: int, place_before: bool):
         if src_tid == target_tid: return
-        src = self._card_map.get(src_tid); tgt = self._card_map.get(target_tid)
-        if not src or not tgt: return
-        self.rebuild_layout(self._sessions)
+        if src_tid not in self._sessions or target_tid not in self._sessions: return
+        items = list(self._sessions.items())
+        src_item = next((it for it in items if it[0]==src_tid), None)
+        if not src_item: return
+        items = [it for it in items if it[0]!=src_tid]
+        tgt_idx = next((i for i,(k,_) in enumerate(items) if k==target_tid), -1)
+        if tgt_idx<0: return
+        items.insert(tgt_idx if place_before else tgt_idx+1, src_item)
+        self._sessions = dict(items)
+        order = [k for k,_ in items]
+        # Defer rebuild until after drag.exec() unwinds — reparenting widgets
+        # mid-drag confuses Qt's OS drag machinery and silently cancels the drop.
+        QTimer.singleShot(0, lambda: self.rebuild_layout(self._sessions))
+        self.tabs_reordered.emit(order)
 
 # ═════════════════════════════════════════════════════════════════════════════
 # TOP BAR / NOTIFICATION BANNER / HOTKEY BAR
@@ -2934,20 +3013,25 @@ class ClipboardDialog(QDialog):
 class CardConfigDialog(QDialog):
     _FIELDS=[("title","Title / custom name"),("cwd","Current directory"),
              ("cmd","Last command"),("ssh","SSH host"),("process","Active process")]
-    def __init__(self,current:List[str],parent=None):
+    def __init__(self, cfg: "CardConfig", parent=None):
         super().__init__(parent); self.setWindowTitle("Tab Card Fields")
         self.setStyleSheet(_dlg_ss()); self.setFixedWidth(360); self._result=None
         lay=QVBoxLayout(self); lay.setContentsMargins(20,20,20,20); lay.setSpacing(10)
         lay.addWidget(QLabel("<b>Choose which fields appear on each tab card:</b>"))
         self._checks={}
         for k,l in self._FIELDS:
-            cb=QCheckBox(l); cb.setChecked(k in current); self._checks[k]=cb; lay.addWidget(cb)
+            cb=QCheckBox(l); cb.setChecked(k in cfg.fields); self._checks[k]=cb; lay.addWidget(cb)
+        lay.addWidget(QLabel(""))  # spacer
+        self._show_tags_cb=QCheckBox("Show tags on cards")
+        self._show_tags_cb.setChecked(getattr(cfg,"show_tags",True))
+        lay.addWidget(self._show_tags_cb)
         bb=QDialogButtonBox(QDialogButtonBox.StandardButton.Save|QDialogButtonBox.StandardButton.Cancel)
         _primary_btn(bb.button(QDialogButtonBox.StandardButton.Save))
         bb.accepted.connect(self._save); bb.rejected.connect(self.reject); lay.addWidget(bb)
     def _save(self):
-        self._result=[k for k in self._checks if self._checks[k].isChecked()] or None; self.accept()
-    def get_fields(self)->Optional[List[str]]: return self._result
+        self._result=([k for k in self._checks if self._checks[k].isChecked()],
+                      self._show_tags_cb.isChecked()); self.accept()
+    def get_result(self)->Optional[tuple]: return self._result
 
 class NotifConfigDialog(QDialog):
     def __init__(self,cfg:NotifConfig,auto_restart:bool=False,parent=None):
@@ -3104,6 +3188,7 @@ class AIDEWindow(QMainWindow):
         self._ball_overlay=SplitBallOverlay(self)
         self._ball_overlay.hide()
         self._build_ui(); _build_keymap()
+        self._start_dashboard()
         self._hotkey_bar.set_btn_active("toggle_notes", self._notes_vis)
         for interval,fn in [(50,self._process_events),(1000,self._check_idle),
                              (500,self._refresh_cards),(30000,self._save_session),
@@ -3130,6 +3215,10 @@ class AIDEWindow(QMainWindow):
         _check_act.setMenuRole(QAction.MenuRole.ApplicationSpecificRole)
         _check_act.triggered.connect(self._manual_check_update)
         _app_m.addAction(_check_act)
+        _dash_act = QAction("Open Mobile Dashboard", self)
+        _dash_act.setMenuRole(QAction.MenuRole.ApplicationSpecificRole)
+        _dash_act.triggered.connect(self._open_dashboard_browser)
+        _app_m.addAction(_dash_act)
         _about_act = QAction(f"About {APP_NAME}", self)
         _about_act.setMenuRole(QAction.MenuRole.AboutRole)
         _about_act.triggered.connect(self._show_about)
@@ -3177,6 +3266,7 @@ class AIDEWindow(QMainWindow):
         self._main_terminal=TerminalWidget()
         self._main_terminal.prefix_action.connect(self._dispatch_action)
         self._main_terminal.split_tab_paste.connect(self._split_paste_to_secondary)
+        self._main_terminal.sent_to_waiting.connect(self._auto_advance_to_next_waiting)
         _mp_lay.addWidget(self._main_terminal,1)
         self._term_splitter.addWidget(self._main_pane)
 
@@ -3507,6 +3597,39 @@ class AIDEWindow(QMainWindow):
             if tid not in new_sessions: new_sessions[tid]=s
         self.sessions=new_sessions
 
+    # ── Mobile dashboard ──────────────────────────────────────────────────────
+    def _start_dashboard(self):
+        try:
+            self._dashboard=DashboardServer(
+                DASHBOARD_PORT,
+                get_sessions=lambda: self.sessions,
+                send_cb=self._dashboard_send,
+            )
+            self._dashboard.start()
+            ip=local_ip()
+            self._tab_bar.set_dashboard_url(f"{ip}:{DASHBOARD_PORT}")
+        except OSError:
+            self._tab_bar.set_dashboard_url("port busy")
+
+    def _dashboard_send(self, tab_id: int, text: str):
+        s=self.sessions.get(tab_id)
+        if s and s.alive: s.write((text+"\n").encode())
+
+    def _open_dashboard_browser(self):
+        ip=local_ip(); webbrowser.open(f"http://{ip}:{DASHBOARD_PORT}")
+
+    def _auto_advance_to_next_waiting(self):
+        """After sending to a waiting terminal, jump to the next one that is waiting."""
+        ids = list(self.sessions.keys())
+        if self.active_id not in ids: return
+        cur = ids.index(self.active_id)
+        # Search from cur+1 wrapping around, skip current
+        for i in range(1, len(ids)):
+            tid = ids[(cur + i) % len(ids)]
+            if tid != self.active_id and getattr(self.sessions[tid], "waiting_input", False):
+                QTimer.singleShot(200, lambda t=tid: self._switch_to(t))
+                return
+
     def _action_next_tab(self):
         ids=list(self.sessions.keys())
         if ids:
@@ -3676,11 +3799,14 @@ class AIDEWindow(QMainWindow):
         dlg.go_to_terminal.connect(self._switch_to); dlg.exec()
 
     def _action_configure_cards(self):
-        dlg=CardConfigDialog(self.config.card.fields,self)
+        dlg=CardConfigDialog(self.config.card,self)
         if dlg.exec()==QDialog.DialogCode.Accepted:
-            fields=dlg.get_fields()
-            if fields:
-                self.config.card.fields=fields; self.config.save()
+            result=dlg.get_result()
+            if result:
+                fields,show_tags=result
+                self.config.card.fields=fields or self.config.card.fields
+                self.config.card.show_tags=show_tags
+                self.config.save()
                 for tid in self.sessions:
                     if c:=self._tab_bar._card_map.get(tid): c.cfg=self.config.card; c.refresh()
 
