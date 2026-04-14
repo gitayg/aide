@@ -112,7 +112,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.9.6"
+VERSION      = "2.9.7"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -234,6 +234,9 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.9.7": [
+        ("🌳", "Tree view sidebar", "Tabs are now grouped by their first tag in collapsible sections; click a group header to collapse/expand"),
+    ],
     "2.9.6": [
         ("⊟", "Focused pane header", "Active split pane header glows blue; clicking any tab card replaces that pane's session"),
     ],
@@ -1976,6 +1979,43 @@ class TabCard(QFrame):
 
 
 
+class _GroupHeader(QWidget):
+    """Collapsible section header for a tag group in the tree sidebar."""
+    toggled = pyqtSignal(str)  # emits the tag key on click
+
+    def __init__(self, tag: str, count: int, collapsed: bool, parent=None):
+        super().__init__(parent)
+        self.tag = tag
+        self.setFixedHeight(24)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setStyleSheet(f"background:{C_SURFACE.name()};border-bottom:1px solid #21262d;")
+        lay = QHBoxLayout(self); lay.setContentsMargins(8, 0, 8, 0); lay.setSpacing(5)
+        self._chev = QLabel(); self._chev.setStyleSheet(f"color:{C_MUTED.name()};font-size:9px;background:transparent;")
+        lay.addWidget(self._chev)
+        label = f"[{tag}]" if tag else "Untagged"
+        lbl = QLabel(label)
+        lbl.setStyleSheet(
+            f"color:{C_ACCENT.name() if tag else C_MUTED.name()};"
+            f"font-size:10px;font-weight:700;background:transparent;"
+            f"letter-spacing:.04em;font-family:'JetBrains Mono',monospace;")
+        lay.addWidget(lbl, 1)
+        self._cnt = QLabel(str(count))
+        self._cnt.setStyleSheet(f"color:{C_MUTED.name()};font-size:9px;background:rgba(255,255,255,.06);border-radius:3px;padding:0 4px;")
+        lay.addWidget(self._cnt)
+        self._set_chev(collapsed)
+
+    def _set_chev(self, collapsed: bool):
+        self._chev.setText("▶" if collapsed else "▼")
+
+    def update_state(self, count: int, collapsed: bool):
+        self._cnt.setText(str(count)); self._set_chev(collapsed)
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self.toggled.emit(self.tag)
+        super().mousePressEvent(e)
+
+
 class TabBar(QWidget):
     tab_selected       = pyqtSignal(int)
     shift_tab_selected = pyqtSignal(int)
@@ -2034,6 +2074,8 @@ class TabBar(QWidget):
         self._unread_filter: bool = False
         self._tag_filter: str = ""
         self._tag_pills: dict = {}
+        self._collapsed_groups: set = set()
+        self._group_headers: list = []
 
     def set_dashboard_url(self, url: str):
         self._dash_url.setText(url)
@@ -2087,23 +2129,64 @@ class TabBar(QWidget):
         self._sessions = sessions
         self.update_tag_pills()
 
+        # Remove old group headers and detach cards (keep card objects alive)
         while self._cl.count() > 1:
             item = self._cl.takeAt(0)
             w = item.widget()
-            if w:
+            if w and not isinstance(w, TabCard):
+                w.deleteLater()
+            elif w:
                 w.setParent(None)
+        self._group_headers.clear()
 
+        # Build ordered groups: sorted tag names, then "" (Untagged) last
+        groups: dict = {}   # tag -> [tid]  (each session in its FIRST tag only)
         for tid, s in self._sessions.items():
-            card = self._card_map.get(tid)
-            if card:
-                if self._unread_filter:
-                    visible = card._unread
-                elif self._tag_filter:
-                    visible = self._tag_filter in getattr(s, 'tags', [])
-                else:
-                    visible = True
-                self._cl.insertWidget(self._cl.count() - 1, card)
-                card.setVisible(visible)
+            tags = getattr(s, 'tags', [])
+            key = tags[0] if tags else ""
+            groups.setdefault(key, []).append(tid)
+
+        sorted_keys = sorted(k for k in groups if k) + ([""] if "" in groups else [])
+
+        for key in sorted_keys:
+            tids = groups[key]
+            # Apply filters
+            visible_tids = []
+            for tid in tids:
+                card = self._card_map.get(tid)
+                if not card: continue
+                if self._unread_filter and not card._unread: continue
+                if self._tag_filter and key != self._tag_filter: continue
+                visible_tids.append(tid)
+            all_tids = tids  # all tids for this group (for hidden cards too)
+
+            # Skip group entirely when filter hides all
+            if (self._unread_filter or self._tag_filter) and not visible_tids:
+                for tid in tids:
+                    if card := self._card_map.get(tid):
+                        card.setVisible(False)
+                        self._cl.insertWidget(self._cl.count()-1, card)
+                continue
+
+            collapsed = key in self._collapsed_groups
+            hdr = _GroupHeader(key, len(visible_tids), collapsed)
+            hdr.toggled.connect(self._toggle_group)
+            self._cl.insertWidget(self._cl.count()-1, hdr)
+            self._group_headers.append(hdr)
+
+            for tid in tids:
+                card = self._card_map.get(tid)
+                if not card: continue
+                in_visible = tid in visible_tids
+                self._cl.insertWidget(self._cl.count()-1, card)
+                card.setVisible(in_visible and not collapsed)
+
+    def _toggle_group(self, tag: str):
+        if tag in self._collapsed_groups:
+            self._collapsed_groups.discard(tag)
+        else:
+            self._collapsed_groups.add(tag)
+        self.rebuild_layout(self._sessions)
 
     # ── card management ────────────────────────────────────────────────────────
     def add_card(self, s: TermSession, cfg: CardConfig) -> "TabCard":
