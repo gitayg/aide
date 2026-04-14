@@ -112,7 +112,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.9.4"
+VERSION      = "2.9.5"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -144,28 +144,31 @@ def _ping_pong_sound(tab_index: int = 0):
     subprocess.Popen(["afplay", str(tmp)], stdout=subprocess.DEVNULL,
                      stderr=subprocess.DEVNULL)
 
-def _racket_hit_sound():
-    """Louder, sharper 'thwack' sound for the split-pane tab-paste."""
+def _smash_sound():
+    """Ping-pong smash: sharp crack + noise burst, louder and punchier than a tick."""
     import io, wave, math, array, random
     SAMPLE_RATE = 44100
-    DURATION = 0.06
-    VOLUME = 0.45
-    freq = 1400
-    n_samples = int(SAMPLE_RATE * DURATION)
+    DURATION    = 0.09   # 90 ms — enough for the crack to ring out
+    VOLUME      = 0.70
+    n = int(SAMPLE_RATE * DURATION)
     samples = array.array("h")
-    rng = random.Random(42)
-    for i in range(n_samples):
+    rng = random.Random(3)
+    for i in range(n):
         t = i / SAMPLE_RATE
-        env = math.exp(-t * 90) * VOLUME
-        tone = math.sin(2 * math.pi * freq * t) + 0.4 * math.sin(2 * math.pi * freq * 2 * t)
-        noise = (rng.random() * 2 - 1) * 0.25
-        val = int(env * 32767 * (tone + noise))
+        # Fast-decay tone (fundamental + 2nd harmonic)
+        env  = math.exp(-t * 55) * VOLUME
+        tone = (math.sin(2*math.pi*950*t)
+              + 0.55*math.sin(2*math.pi*1900*t)
+              + 0.20*math.sin(2*math.pi*2850*t))
+        # Heavy transient noise at the very start (crack character)
+        crack = (rng.random()*2-1) * math.exp(-t * 300) * 1.8
+        val = int(env * 32767 * (tone + crack) / 2.5)
         samples.append(max(-32767, min(32767, val)))
     buf = io.BytesIO()
     with wave.open(buf, "wb") as w:
         w.setnchannels(1); w.setsampwidth(2); w.setframerate(SAMPLE_RATE)
         w.writeframes(samples.tobytes())
-    tmp = Path.home() / ".aide" / "racket_hit.wav"
+    tmp = Path.home() / ".aide" / "smash.wav"
     tmp.write_bytes(buf.getvalue())
     subprocess.Popen(["afplay", str(tmp)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
@@ -231,6 +234,9 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.9.5": [
+        ("🏓", "Tab smash sound", "Pressing Tab in split mode plays a ping-pong smash — with selection sends text to the other pane, without selection swaps focus"),
+    ],
     "2.9.4": [
         ("↻", "GitHub update check", "Update detection now fetches version from GitHub directly; clicking Update downloads and applies the latest AIDE.py automatically"),
         ("A±", "Font buttons moved", "A- and A+ buttons are now next to the main ribbon on the left"),
@@ -1197,10 +1203,12 @@ class ScreenshotOverlay(QWidget):
 # ═════════════════════════════════════════════════════════════════════════════
 
 class TerminalWidget(QWidget):
-    prefix_action  = pyqtSignal(str)
+    prefix_action   = pyqtSignal(str)
     split_tab_paste = pyqtSignal(str)
-    # Emitted when the user sends Enter to a session that was in waiting_input state
+    split_tab_focus = pyqtSignal()   # Tab pressed without selection in split mode → swap pane
     sent_to_waiting = pyqtSignal()
+
+    in_split: bool = False  # set by AIDEWindow when split mode is active
 
     _PREFIX_MAP = {
         Qt.Key.Key_N:"new_tab",         Qt.Key.Key_W:"close_tab",
@@ -1483,14 +1491,18 @@ class TerminalWidget(QWidget):
             txt=self._sel_text()
             if txt: QApplication.clipboard().setText(txt)
             self._sel_start=None; self._sel_end=None; self.update(); return
-        # Tab with an active selection in split-terminal mode → send selected
-        # text directly to the other pane instead of typing a tab character.
-        if key==K.Key_Tab and self._sel_start:
-            txt=self._sel_text()
-            if txt:
-                self._sel_start=None; self._sel_end=None; self.update()
-                self.split_tab_paste.emit(txt)
-                return
+        # Tab in split-terminal mode:
+        #   with selection  → paste selected text to other pane (smash sound via AIDEWindow)
+        #   without selection → swap pane focus (smash sound via AIDEWindow)
+        if key==K.Key_Tab and self.in_split:
+            if self._sel_start:
+                txt=self._sel_text()
+                if txt:
+                    self._sel_start=None; self._sel_end=None; self.update()
+                    self.split_tab_paste.emit(txt)
+            else:
+                self.split_tab_focus.emit()
+            return
         # Cmd/Ctrl+V → paste from clipboard into the running shell. (On Mac
         # this is Cmd+V; on Linux/Windows it is Ctrl+V — same key path because
         # of the Qt Ctrl/Meta swap.)
@@ -3273,6 +3285,7 @@ class AIDEWindow(QMainWindow):
         self._main_terminal=TerminalWidget()
         self._main_terminal.prefix_action.connect(self._dispatch_action)
         self._main_terminal.split_tab_paste.connect(self._split_paste_to_secondary)
+        self._main_terminal.split_tab_focus.connect(self._swap_focus_smash)
         self._main_terminal.sent_to_waiting.connect(self._auto_advance_to_next_waiting)
         _mp_lay.addWidget(self._main_terminal,1)
         self._term_splitter.addWidget(self._main_pane)
@@ -3291,6 +3304,7 @@ class AIDEWindow(QMainWindow):
         self._secondary_terminal=TerminalWidget()
         self._secondary_terminal.prefix_action.connect(self._dispatch_action)
         self._secondary_terminal.split_tab_paste.connect(self._split_paste_to_main)
+        self._secondary_terminal.split_tab_focus.connect(self._swap_focus_smash)
         _sp_lay.addWidget(self._secondary_terminal,1)
         self._split_panel.addWidget(self._secondary_pane)
 
@@ -3429,6 +3443,9 @@ class AIDEWindow(QMainWindow):
                 if url: bp.navigate(url)
         self._hotkey_bar.set_btn_active("split_browse", self._split_mode=="browse")
         self._hotkey_bar.set_btn_active("split_term",   self._split_mode=="terminal")
+        in_split = self._split_mode == "terminal"
+        self._main_terminal.in_split = in_split
+        self._secondary_terminal.in_split = in_split
         self._update_split_headers()
         self._update_status()
 
@@ -3479,7 +3496,7 @@ class AIDEWindow(QMainWindow):
             self._animate_split_ball(main_to_secondary=False)
 
     def _animate_split_ball(self, main_to_secondary: bool):
-        threading.Thread(target=_racket_hit_sound, daemon=True).start()
+        threading.Thread(target=_smash_sound, daemon=True).start()
         src = self._main_terminal if main_to_secondary else self._secondary_terminal
         dst = self._secondary_terminal if main_to_secondary else self._main_terminal
         src_center = src.mapTo(self, src.rect().center())
@@ -3495,6 +3512,15 @@ class AIDEWindow(QMainWindow):
                 bp = self._browsers.get(self.active_id)
                 if bp: bp._url.setFocus()
         else: self._main_terminal.setFocus()
+
+    def _swap_focus_smash(self):
+        """Tab key in split mode: swap pane focus with a smash sound."""
+        if self._split_mode != "terminal": return
+        threading.Thread(target=_smash_sound, daemon=True).start()
+        if self._main_terminal.hasFocus():
+            self._secondary_terminal.setFocus()
+        else:
+            self._main_terminal.setFocus()
 
     # ── event queue ────────────────────────────────────────────────────────────
     def _process_events(self):
