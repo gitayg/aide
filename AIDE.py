@@ -112,7 +112,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.9.8"
+VERSION      = "2.9.9"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -171,6 +171,71 @@ def _smash_sound():
     tmp = Path.home() / ".aide" / "smash.wav"
     tmp.write_bytes(buf.getvalue())
     subprocess.Popen(["afplay", str(tmp)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def _tennis_serve_sound():
+    """Tennis serve: deep racket-string thwock for entering split mode."""
+    import io, wave, math, array, random
+    SAMPLE_RATE = 44100
+    DURATION    = 0.13
+    VOLUME      = 0.65
+    n = int(SAMPLE_RATE * DURATION)
+    samples = array.array("h")
+    rng = random.Random(11)
+    for i in range(n):
+        t = i / SAMPLE_RATE
+        # Lower fundamental (~520 Hz) + slight downward pitch sweep for the "thwock" feel
+        freq = 520 - 120 * t
+        env  = math.exp(-t * 28) * VOLUME
+        tone = math.sin(2*math.pi*freq*t) + 0.45*math.sin(2*math.pi*freq*2*t)
+        # Short string-buzz transient at the strike point
+        buzz = (rng.random()*2-1) * math.exp(-t * 220) * 1.4
+        val = int(env * 32767 * (tone + buzz) / 2.6)
+        samples.append(max(-32767, min(32767, val)))
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(SAMPLE_RATE)
+        w.writeframes(samples.tobytes())
+    tmp = Path.home() / ".aide" / "tennis_serve.wav"
+    tmp.write_bytes(buf.getvalue())
+    subprocess.Popen(["afplay", str(tmp)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def _tennis_point_sound():
+    """Point ends: light high ping with a quick fade for exiting split mode."""
+    import io, wave, math, array
+    SAMPLE_RATE = 44100
+    DURATION    = 0.18
+    VOLUME      = 0.55
+    n = int(SAMPLE_RATE * DURATION)
+    samples = array.array("h")
+    for i in range(n):
+        t = i / SAMPLE_RATE
+        # Two-tone descending chime (1500 → 1100 Hz) — "point ended" cue
+        f = 1500 - 400 * (t / DURATION)
+        env = math.exp(-t * 18) * VOLUME
+        tone = math.sin(2*math.pi*f*t) + 0.35*math.sin(2*math.pi*f*1.5*t)
+        val = int(env * 32767 * tone / 1.6)
+        samples.append(max(-32767, min(32767, val)))
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(SAMPLE_RATE)
+        w.writeframes(samples.tobytes())
+    tmp = Path.home() / ".aide" / "tennis_point.wav"
+    tmp.write_bytes(buf.getvalue())
+    subprocess.Popen(["afplay", str(tmp)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def _macos_notify(title: str, msg: str):
+    """Post a macOS Notification Center alert via osascript."""
+    try:
+        safe_title = title.replace('"', "'")[:120]
+        safe_msg   = msg.replace('"', "'")[:240]
+        script = f'display notification "{safe_msg}" with title "AIDE" subtitle "{safe_title}"'
+        subprocess.Popen(["osascript", "-e", script],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
 
 
 class SplitBallOverlay(QWidget):
@@ -234,6 +299,11 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.9.9": [
+        ("🔔", "macOS notification when Claude asks", "System Notification Center alert when Claude is waiting for input and AIDE isn't focused"),
+        ("🎾", "Tennis sounds for split", "Deep racket-thwock when entering split mode; descending chime when exiting"),
+        ("⇧", "Shift+click to split/swap", "Shift+click any tab to split current with it; if already split, swaps the secondary pane to that tab"),
+    ],
     "2.9.8": [
         ("⌨", "Tab only smashes with selection", "In split mode, Tab without a text selection passes through as normal shell autocomplete; smash only fires when text is selected"),
     ],
@@ -3500,7 +3570,14 @@ class AIDEWindow(QMainWindow):
 
     # ── split view ─────────────────────────────────────────────────────────────
     def _set_split(self,mode:str):
+        prev_mode = self._split_mode
         if mode==self._split_mode: mode="none"
+        # Tennis SFX: serve when entering split, point-end when leaving
+        if mode != prev_mode:
+            if mode != "none" and prev_mode == "none":
+                threading.Thread(target=_tennis_serve_sound, daemon=True).start()
+            elif mode == "none" and prev_mode != "none":
+                threading.Thread(target=_tennis_point_sound, daemon=True).start()
         self._split_mode=mode
         if mode=="none":
             self._split_panel.setVisible(False); self._secondary_terminal.set_session(None)
@@ -3635,10 +3712,12 @@ class AIDEWindow(QMainWindow):
     def _show_notif(self,tid:int,msg:str,ctx:str):
         s=self.sessions.get(tid)
         if not s or not self.config.notif.enabled: return
-        # Sound fires for ALL tabs — including the currently-visible one — so
-        # the user always hears the chime when the AI finishes.
         threading.Thread(target=play_sound,args=(self.config.notif,),daemon=True).start()
-        # Visual banner / popup only makes sense for background tabs.
+        # macOS system notification — fires for any tab so user is alerted
+        # even when AIDE isn't the focused app.
+        if not self.isActiveWindow() or tid != self.active_id:
+            threading.Thread(target=_macos_notify,
+                             args=(s.effective_title(), msg), daemon=True).start()
         if tid==self.active_id: return
         full=f"{s.effective_title()}: {msg}"; self._last_notif=(s,msg,ctx)
         style=self.config.notif.style
@@ -3904,10 +3983,16 @@ class AIDEWindow(QMainWindow):
         self._switch_to(tid)
 
     def _on_shift_tab_clicked(self, tid: int):
-        """Shift+click a tab → instantly split current tab with it."""
+        """Shift+click a tab → split current with it, or swap the secondary pane if already split."""
         if tid == self.active_id: return
         if tid not in self.sessions: return
-        # If already in split mode, just swap the secondary pane.
+        if self._split_mode == "terminal":
+            # Already in split — swap the secondary pane to the clicked tab.
+            self._secondary_id = tid
+            self._secondary_terminal.set_session(self.sessions[tid])
+            self._tab_bar.set_active(self.active_id, self._secondary_id)
+            self._update_split_headers()
+            return
         self._secondary_id = tid
         self._set_split("terminal")
 
