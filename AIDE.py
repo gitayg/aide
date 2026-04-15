@@ -112,7 +112,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.9.7"
+VERSION      = "2.9.8"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -234,6 +234,9 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.9.8": [
+        ("⌨", "Tab only smashes with selection", "In split mode, Tab without a text selection passes through as normal shell autocomplete; smash only fires when text is selected"),
+    ],
     "2.9.7": [
         ("🌳", "Tree view sidebar", "Tabs are now grouped by their first tag in collapsible sections; click a group header to collapse/expand"),
     ],
@@ -1211,7 +1214,7 @@ class ScreenshotOverlay(QWidget):
 class TerminalWidget(QWidget):
     prefix_action   = pyqtSignal(str)
     split_tab_paste = pyqtSignal(str)
-    split_tab_focus = pyqtSignal()   # Tab pressed without selection in split mode → swap pane
+
     sent_to_waiting = pyqtSignal()
 
     in_split: bool = False  # set by AIDEWindow when split mode is active
@@ -1497,18 +1500,13 @@ class TerminalWidget(QWidget):
             txt=self._sel_text()
             if txt: QApplication.clipboard().setText(txt)
             self._sel_start=None; self._sel_end=None; self.update(); return
-        # Tab in split-terminal mode:
-        #   with selection  → paste selected text to other pane (smash sound via AIDEWindow)
-        #   without selection → swap pane focus (smash sound via AIDEWindow)
-        if key==K.Key_Tab and self.in_split:
-            if self._sel_start:
-                txt=self._sel_text()
-                if txt:
-                    self._sel_start=None; self._sel_end=None; self.update()
-                    self.split_tab_paste.emit(txt)
-            else:
-                self.split_tab_focus.emit()
-            return
+        # Tab in split-terminal mode with an active selection → paste to other pane + smash
+        if key==K.Key_Tab and self.in_split and self._sel_start:
+            txt=self._sel_text()
+            if txt:
+                self._sel_start=None; self._sel_end=None; self.update()
+                self.split_tab_paste.emit(txt)
+                return
         # Cmd/Ctrl+V → paste from clipboard into the running shell. (On Mac
         # this is Cmd+V; on Linux/Windows it is Ctrl+V — same key path because
         # of the Qt Ctrl/Meta swap.)
@@ -3372,7 +3370,6 @@ class AIDEWindow(QMainWindow):
         self._main_terminal=TerminalWidget()
         self._main_terminal.prefix_action.connect(self._dispatch_action)
         self._main_terminal.split_tab_paste.connect(self._split_paste_to_secondary)
-        self._main_terminal.split_tab_focus.connect(self._swap_focus_smash)
         self._main_terminal.sent_to_waiting.connect(self._auto_advance_to_next_waiting)
         _mp_lay.addWidget(self._main_terminal,1)
         self._term_splitter.addWidget(self._main_pane)
@@ -3391,7 +3388,7 @@ class AIDEWindow(QMainWindow):
         self._secondary_terminal=TerminalWidget()
         self._secondary_terminal.prefix_action.connect(self._dispatch_action)
         self._secondary_terminal.split_tab_paste.connect(self._split_paste_to_main)
-        self._secondary_terminal.split_tab_focus.connect(self._swap_focus_smash)
+
         _sp_lay.addWidget(self._secondary_terminal,1)
         self._split_panel.addWidget(self._secondary_pane)
 
@@ -3618,14 +3615,7 @@ class AIDEWindow(QMainWindow):
                 if bp: bp._url.setFocus()
         else: self._main_terminal.setFocus()
 
-    def _swap_focus_smash(self):
-        """Tab key in split mode: swap pane focus with a smash sound."""
-        if self._split_mode != "terminal": return
-        threading.Thread(target=_smash_sound, daemon=True).start()
-        if self._main_terminal.hasFocus():
-            self._secondary_terminal.setFocus()
-        else:
-            self._main_terminal.setFocus()
+
 
     # ── event queue ────────────────────────────────────────────────────────────
     def _process_events(self):
