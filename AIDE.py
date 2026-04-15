@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2024-2026 Itay Glick. Licensed under the AGPL-3.0-or-later.
+# See the LICENSE file in the project root for the full license text.
 """
   ███╗   ██╗ █████╗ ███╗   ██╗ ██████╗      █████╗ ██╗
   ████╗  ██║██╔══██╗████╗  ██║██╔═══██╗    ██╔══██╗██║
@@ -112,7 +115,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.9.10"
+VERSION      = "2.10.0"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -299,6 +302,9 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.10.0": [
+        ("⚖", "AGPL-3.0 license", "AIDE is now licensed under the GNU Affero GPL v3.0 or later — see LICENSE in the repo root"),
+    ],
     "2.9.10": [
         ("📎", "Paste files as paths", "Right-click → Paste files as paths inserts shell-quoted paths from any Finder file copy; Cmd+V now prefers file paths over the filename text"),
     ],
@@ -362,7 +368,7 @@ WHATS_NEW: Dict[str, list] = {
         ("🖼", "Custom AIDE icon",              "New dark terminal icon replaces the Python rocket in Dock and Finder"),
         ("🔁", "Auto git pull on restart",      "↻ Update button now pulls latest code before restarting"),
         ("🔒", "Git-only update detection",     "Update checks now use git remote only — no more local file watching"),
-        ("🏷", "Full rebrand to AIDE",          "All NanoAI/aiterm references replaced; config moved to ~/.aide/"),
+        ("🏷", "Full rebrand to AIDE",          "Config moved to ~/.aide/; legacy paths cleaned up"),
     ],
     "2.1.2": [
         ("🔑", "API Keys in ribbon",          "One-click 🔑 API Keys button added to the toolbar"),
@@ -398,28 +404,6 @@ try:
     _os.chmod(CONFIG_DIR, 0o700)
 except OSError:
     pass
-
-# ── One-time migration from ~/.nanoai → ~/.aide ───────────────────────────────
-def _migrate_nanoai():
-    old_dir = Path.home() / ".nanoai"
-    for fname in ("session.json", "config.json", "clipboard.json", "vault.enc"):
-        src = old_dir / fname
-        dst = CONFIG_DIR / fname
-        if not src.exists(): continue
-        if dst.exists():
-            # Only overwrite session.json if the old one has more tabs
-            if fname == "session.json":
-                try:
-                    old_tabs = len(json.loads(src.read_text()).get("tabs", {}))
-                    new_tabs = len(json.loads(dst.read_text()).get("tabs", {}))
-                    if old_tabs <= new_tabs: continue
-                except: continue
-            else:
-                continue  # don't overwrite other files that already exist
-        try:
-            import shutil; shutil.copy2(str(src), str(dst))
-        except: pass
-_migrate_nanoai()
 
 DEFAULT_SHELL = os.environ.get("COMSPEC", "cmd.exe") if IS_WINDOWS else \
                 os.environ.get("SHELL", "/bin/bash")
@@ -3917,7 +3901,10 @@ class AIDEWindow(QMainWindow):
         QMessageBox.about(self, f"About {APP_NAME}",
             f"<b>{APP_NAME}</b> v{VERSION}<br>"
             f"AI Dev Env — Native Desktop Terminal<br><br>"
-            f"<a href='https://github.com/gitayg/aide'>github.com/gitayg/aide</a>")
+            f"<a href='https://github.com/gitayg/aide'>github.com/gitayg/aide</a><br><br>"
+            f"Licensed under the "
+            f"<a href='https://www.gnu.org/licenses/agpl-3.0.html'>GNU Affero GPL v3.0</a> "
+            f"or later. See the LICENSE file for full terms.")
 
     def _do_restart(self):
         self._save_session()
