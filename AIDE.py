@@ -112,7 +112,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.9.9"
+VERSION      = "2.9.10"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -299,6 +299,9 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.9.10": [
+        ("📎", "Paste files as paths", "Right-click → Paste files as paths inserts shell-quoted paths from any Finder file copy; Cmd+V now prefers file paths over the filename text"),
+    ],
     "2.9.9": [
         ("🔔", "macOS notification when Claude asks", "System Notification Center alert when Claude is waiting for input and AIDE isn't focused"),
         ("🎾", "Tennis sounds for split", "Deep racket-thwock when entering split mode; descending chime when exiting"),
@@ -1582,23 +1585,23 @@ class TerminalWidget(QWidget):
         # of the Qt Ctrl/Meta swap.)
         if ctrl and not shift and key==K.Key_V and self.session:
             cb = QApplication.clipboard()
+            mime = cb.mimeData()
+            # Prefer file URLs over text — Finder file copies set both the
+            # filename as text and the full path as a URL; users want the path.
+            if mime and mime.hasUrls():
+                paths = " ".join(
+                    shlex.quote(u.toLocalFile())
+                    for u in mime.urls()
+                    if u.isLocalFile() and "\x00" not in u.toLocalFile()
+                )
+                if paths:
+                    self.session.scroll_offset = 0
+                    self.session.write(paths.encode("utf-8"))
+                    return
             text = cb.text()
             if text:
                 self.session.scroll_offset=0
                 self.session.write(text.encode("utf-8"))
-            else:
-                # Fallback: if the clipboard holds file URLs (Cmd+C on a file in
-                # Finder) but no plain text, insert the shell-quoted path(s).
-                mime = cb.mimeData()
-                if mime and mime.hasUrls():
-                    paths = " ".join(
-                        shlex.quote(u.toLocalFile())
-                        for u in mime.urls()
-                        if u.isLocalFile() and "\x00" not in u.toLocalFile()
-                    )
-                    if paths:
-                        self.session.scroll_offset = 0
-                        self.session.write(paths.encode("utf-8"))
             return
         if self._sel_start:
             self._sel_start=None; self._sel_end=None; self.update()
@@ -1702,7 +1705,9 @@ class TerminalWidget(QWidget):
             f"QMenu::item:selected{{background:{C_ACCENT.name()}44;color:{C_ACCENT.name()};}}"
             f"QMenu::item:disabled{{color:{C_MUTED.name()};}}")
         paste_act  = menu.addAction("Paste text")
-        paste_act.setEnabled(has_text or has_files)
+        paste_act.setEnabled(has_text)
+        file_act   = menu.addAction("📎  Paste files as paths")
+        file_act.setEnabled(has_files)
         img_act    = menu.addAction("🖼  Paste image as file path")
         img_act.setEnabled(has_image)
         menu.addSeparator()
@@ -1710,16 +1715,18 @@ class TerminalWidget(QWidget):
         act=menu.exec(event.globalPos())
         if act==paste_act:
             text = cb.text()
-            if not text and has_files:
-                # File URLs from Finder copy
-                text = " ".join(
-                    shlex.quote(u.toLocalFile())
-                    for u in cb.mimeData().urls()
-                    if u.isLocalFile() and "\x00" not in u.toLocalFile()
-                )
             if text and self.session:
                 self.session.scroll_offset=0
                 self.session.write(text.encode("utf-8"))
+        elif act==file_act:
+            paths = " ".join(
+                shlex.quote(u.toLocalFile())
+                for u in cb.mimeData().urls()
+                if u.isLocalFile() and "\x00" not in u.toLocalFile()
+            )
+            if paths and self.session:
+                self.session.scroll_offset=0
+                self.session.write(paths.encode("utf-8"))
         elif act==img_act:
             path = self._clipboard_image_path()
             if path and self.session:
