@@ -115,7 +115,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.10.1"
+VERSION      = "2.10.2"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -1868,7 +1868,12 @@ class TabCard(QFrame):
         if show_tags and s.tags:
             tags_html = "".join(f'<span style="color:{_acc};font-size:10px">[{t}]</span>' for t in s.tags) + " "
         plain = s.effective_title()
-        self._lbl0.setText(f"{tags_html}{plain}" if tags_html else plain)
+        waiting = getattr(s, "waiting_input", False)
+        if tags_html:
+            title_span = f'<b>{plain}</b>' if waiting else plain
+            self._lbl0.setText(f"{tags_html}{title_span}")
+        else:
+            self._lbl0.setText(plain)
         # Format last-ping time as relative string
         _ping_str=""
         if s.last_ping_time>0:
@@ -2048,7 +2053,7 @@ class _GroupHeader(QWidget):
     """Collapsible section header for a tag group in the tree sidebar."""
     toggled = pyqtSignal(str)  # emits the tag key on click
 
-    def __init__(self, tag: str, count: int, collapsed: bool, parent=None):
+    def __init__(self, tag: str, collapsed: bool, parent=None):
         super().__init__(parent)
         self.tag = tag
         self.setFixedHeight(24)
@@ -2064,16 +2069,10 @@ class _GroupHeader(QWidget):
             f"font-size:10px;font-weight:700;background:transparent;"
             f"letter-spacing:.04em;font-family:'JetBrains Mono',monospace;")
         lay.addWidget(lbl, 1)
-        self._cnt = QLabel(str(count))
-        self._cnt.setStyleSheet(f"color:{C_MUTED.name()};font-size:9px;background:rgba(255,255,255,.06);border-radius:3px;padding:0 4px;")
-        lay.addWidget(self._cnt)
         self._set_chev(collapsed)
 
     def _set_chev(self, collapsed: bool):
         self._chev.setText("▶" if collapsed else "▼")
-
-    def update_state(self, count: int, collapsed: bool):
-        self._cnt.setText(str(count)); self._set_chev(collapsed)
 
     def mousePressEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton:
@@ -2234,7 +2233,7 @@ class TabBar(QWidget):
                 continue
 
             collapsed = key in self._collapsed_groups
-            hdr = _GroupHeader(key, len(visible_tids), collapsed)
+            hdr = _GroupHeader(key, collapsed)
             hdr.toggled.connect(self._toggle_group)
             self._cl.insertWidget(self._cl.count()-1, hdr)
             self._group_headers.append(hdr)
