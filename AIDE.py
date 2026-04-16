@@ -115,7 +115,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.12.2"
+VERSION      = "2.12.4"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -302,6 +302,12 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.12.4": [
+        ("𝐁", "Bold terminal title actually works", "Put font-weight in the QLabel stylesheet — Qt CSS beats setFont() + rich-text mode swallows <b>, so only the stylesheet reliably bolds the card title when Claude is waiting"),
+    ],
+    "2.12.3": [
+        ("💾", "Persistent GitHub token selection", "Token choice now saves to disk immediately on change; locked vault no longer clobbers saved selections during tab switch"),
+    ],
     "2.12.2": [
         ("🐙", "GitHub token exported before autostart", "Token is silently exported into the shell before the autostart command runs, so claude and other autostart tools see GITHUB_TOKEN set; changing the token in the panel re-exports into the live shell"),
     ],
@@ -1904,10 +1910,8 @@ class TabCard(QFrame):
         if show_tags and s.tags:
             tags_html = "".join(f'<span style="color:{_acc};font-size:10px">[{t}]</span>' for t in s.tags) + " "
         plain = s.effective_title()
-        waiting = getattr(s, "waiting_input", False)
         if tags_html:
-            title_span = f'<b>{plain}</b>' if waiting else plain
-            self._lbl0.setText(f"{tags_html}{title_span}")
+            self._lbl0.setText(f"{tags_html}{plain}")
         else:
             self._lbl0.setText(plain)
         # Format last-ping time as relative string
@@ -1967,10 +1971,13 @@ class TabCard(QFrame):
         visible  = getattr(self, "_visible",   False)   # shown in secondary split pane
         waiting  = getattr(self.session, "waiting_input",   False)
         blink_on = getattr(self, "_blink_phase", False)
-        # Title label: bold + bright when waiting for input, dimmed otherwise
-        fg = C_FG.name() if waiting else C_MUTED.name()
-        self._lbl0.setStyleSheet(f"color:{fg};font-size:12px;background:transparent;")
-        f = self._lbl0.font(); f.setBold(waiting); self._lbl0.setFont(f)
+        # Title label: bold + bright when waiting for input, dimmed otherwise.
+        # font-weight must live in the stylesheet — setFont(bold) is ignored when
+        # the label has a stylesheet (CSS wins) and again in rich-text mode.
+        fg     = C_FG.name() if waiting else C_MUTED.name()
+        weight = "700" if waiting else "400"
+        self._lbl0.setStyleSheet(
+            f"QLabel{{color:{fg};font-size:12px;font-weight:{weight};background:transparent;}}")
         # Left accent bar — drawn in paintEvent to avoid QFrame CSS border artifacts
         if self._active or visible:
             self._left_color = C_ACCENT
@@ -3657,7 +3664,11 @@ class AIDEWindow(QMainWindow):
             self.sessions[self.active_id].tasks=self._notes_panel.get_tasks()
             self.sessions[self.active_id].autostart_dir=self._notes_panel.get_autostart_dir()
             self.sessions[self.active_id].autostart_cmd=self._notes_panel.get_autostart_cmd()
-            self.sessions[self.active_id].github_token_name=self._notes_panel.get_github_token_name()
+            # Only read the token selection when the vault is unlocked — a locked
+            # vault shows only "(none)" in the combo and would otherwise clobber
+            # the persisted selection for every tab on switch/save.
+            if self._vault.is_unlocked():
+                self.sessions[self.active_id].github_token_name=self._notes_panel.get_github_token_name()
             v=self._notes_panel.get_variables()
             if v is not None:
                 self.sessions[self.active_id].variables=v
@@ -4227,9 +4238,10 @@ class AIDEWindow(QMainWindow):
         s = self.sessions[self.active_id]
         if s.github_token_name == name: return
         s.github_token_name = name
+        # Persist immediately so the selection survives an unexpected exit.
+        self._save_session()
         if s.alive:
             exports = self._gh_token_exports(s)
-            # If the user cleared the selection, unset the vars instead.
             if not exports and self._vault.is_unlocked():
                 exports = "unset GITHUB_TOKEN GH_TOKEN; "
             if exports:
@@ -4395,7 +4407,11 @@ class AIDEWindow(QMainWindow):
             self.sessions[self.active_id].tasks=self._notes_panel.get_tasks()
             self.sessions[self.active_id].autostart_dir=self._notes_panel.get_autostart_dir()
             self.sessions[self.active_id].autostart_cmd=self._notes_panel.get_autostart_cmd()
-            self.sessions[self.active_id].github_token_name=self._notes_panel.get_github_token_name()
+            # Only read the token selection when the vault is unlocked — a locked
+            # vault shows only "(none)" in the combo and would otherwise clobber
+            # the persisted selection for every tab on switch/save.
+            if self._vault.is_unlocked():
+                self.sessions[self.active_id].github_token_name=self._notes_panel.get_github_token_name()
             v=self._notes_panel.get_variables()
             if v is not None:
                 self.sessions[self.active_id].variables=v
