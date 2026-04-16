@@ -115,7 +115,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.12.5"
+VERSION      = "2.13.0"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -302,6 +302,9 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.13.0": [
+        ("⊞", "Up to 4 split panels", "Shift+click a tab card to add it as a new split pane — repeat up to 4 (2×2 grid); Cmd+1–4 focus each pane; the right sidebar always shows the focused pane's notes/vars/token"),
+    ],
     "2.12.5": [
         ("🔗", "Ctrl+click opens URLs", "Hold Ctrl (⌘ on macOS) and click any URL in the terminal to open it in the browser; cursor changes to a pointing hand when hovering a link with Ctrl held"),
     ],
@@ -1586,7 +1589,7 @@ class TerminalWidget(QWidget):
             self.prefix_action.emit("next_tab" if not shift else "prev_tab"); return
         if ctrl and not shift and K.Key_1<=key<=K.Key_9:
             n = key - K.Key_0
-            if self.in_split and n in (1, 2):
+            if self.in_split and 1 <= n <= 4:
                 self.prefix_action.emit(f"focus_pane_{n}"); return
             self.prefix_action.emit(f"goto_{n}"); return
         if key==K.Key_plusminus or event.text()=="±":
@@ -3520,7 +3523,9 @@ class AIDEWindow(QMainWindow):
         self._next_id=0; self.active_id=-1
         self._split_mode="none"; self._secondary_id=-1
         self._split_picking=False
-        self._focused_pane="main"  # "main" or "secondary" — which pane last had keyboard focus
+        self._focused_pane=0       # int index 0-3 — which pane last had keyboard focus
+        self._num_panes=1          # number of visible panes (1-4)
+        self._pane_ids=[-1,-1,-1,-1]  # session ID for each pane slot
         self._notes_vis=True; self._last_notif:Optional[tuple]=None
         self._cb=SharedClipboard()
         self._vault=SecureVault()
@@ -3592,49 +3597,67 @@ class AIDEWindow(QMainWindow):
         term_area=QWidget(); term_area.setStyleSheet(f"background:{C_BG.name()};")
         tv=QVBoxLayout(term_area); tv.setContentsMargins(0,0,0,0); tv.setSpacing(0)
         self._notif_banner=NotifBanner(); tv.addWidget(self._notif_banner)
+        # ── Outer vertical splitter: top row (panes 0+1) / bot row (panes 2+3) ──
+        _splitter_ss=f"QSplitter::handle{{background:{C_SURFACE.name()};}}"
+        self._outer_splitter=QSplitter(Qt.Orientation.Vertical)
+        self._outer_splitter.setHandleWidth(2)
+        self._outer_splitter.setStyleSheet(_splitter_ss)
         self._term_splitter=QSplitter(Qt.Orientation.Horizontal)
         self._term_splitter.setHandleWidth(2)
-        self._term_splitter.setStyleSheet(f"QSplitter::handle{{background:{C_SURFACE.name()};}}")
+        self._term_splitter.setStyleSheet(_splitter_ss)
+        self._bot_splitter=QSplitter(Qt.Orientation.Horizontal)
+        self._bot_splitter.setHandleWidth(2)
+        self._bot_splitter.setStyleSheet(_splitter_ss)
+        self._bot_splitter.setVisible(False)
+        self._outer_splitter.addWidget(self._term_splitter)
+        self._outer_splitter.addWidget(self._bot_splitter)
 
-        # ── Main pane: header + terminal ──────────────────────────────────────
-        self._main_pane=QWidget(); self._main_pane.setStyleSheet("background:transparent;")
-        _mp_lay=QVBoxLayout(self._main_pane); _mp_lay.setContentsMargins(0,0,0,0); _mp_lay.setSpacing(0)
-        self._main_header=QLabel()
-        self._main_header.setFixedHeight(22)
-        self._main_header.setStyleSheet(
-            f"background:{C_SURFACE.name()};color:{C_MUTED.name()};"
-            f"font-size:11px;font-family:'JetBrains Mono',monospace;"
-            f"padding:0 8px;border-bottom:1px solid #30363d;")
-        self._main_header.setVisible(False)
-        _mp_lay.addWidget(self._main_header)
-        self._main_terminal=TerminalWidget()
-        self._main_terminal.prefix_action.connect(self._dispatch_action)
-        self._main_terminal.split_tab_paste.connect(self._split_paste_to_secondary)
+        def _make_pane(idx: int):
+            """Create a pane container with header + terminal; returns (widget, header, terminal)."""
+            pane=QWidget(); pane.setStyleSheet("background:transparent;")
+            lay=QVBoxLayout(pane); lay.setContentsMargins(0,0,0,0); lay.setSpacing(0)
+            hdr=QLabel(); hdr.setFixedHeight(22)
+            hdr.setStyleSheet(
+                f"background:{C_SURFACE.name()};color:{C_MUTED.name()};"
+                f"font-size:11px;font-family:'JetBrains Mono',monospace;"
+                f"padding:0 8px;border-bottom:1px solid #30363d;")
+            hdr.setVisible(False)
+            lay.addWidget(hdr)
+            term=TerminalWidget()
+            term.prefix_action.connect(self._dispatch_action)
+            term.split_tab_paste.connect(lambda text, i=idx: self._on_split_paste(i, text))
+            lay.addWidget(term, 1)
+            return pane, hdr, term
+
+        # ── Pane 0 (main) ─────────────────────────────────────────────────────
+        self._main_pane, self._main_header, self._main_terminal = _make_pane(0)
         self._main_terminal.sent_to_waiting.connect(self._auto_advance_to_next_waiting)
-        _mp_lay.addWidget(self._main_terminal,1)
         self._term_splitter.addWidget(self._main_pane)
 
-        # ── Secondary pane: header + terminal ─────────────────────────────────
+        # ── Pane 1 (secondary, in QStackedWidget to support browser tabs) ─────
         self._split_panel=QStackedWidget(); self._split_panel.setVisible(False)
-        self._secondary_pane=QWidget(); self._secondary_pane.setStyleSheet("background:transparent;")
-        _sp_lay=QVBoxLayout(self._secondary_pane); _sp_lay.setContentsMargins(0,0,0,0); _sp_lay.setSpacing(0)
-        self._secondary_header=QLabel()
-        self._secondary_header.setFixedHeight(22)
-        self._secondary_header.setStyleSheet(
-            f"background:{C_SURFACE.name()};color:{C_MUTED.name()};"
-            f"font-size:11px;font-family:'JetBrains Mono',monospace;"
-            f"padding:0 8px;border-bottom:1px solid #30363d;")
-        _sp_lay.addWidget(self._secondary_header)
-        self._secondary_terminal=TerminalWidget()
-        self._secondary_terminal.prefix_action.connect(self._dispatch_action)
-        self._secondary_terminal.split_tab_paste.connect(self._split_paste_to_main)
-
-        _sp_lay.addWidget(self._secondary_terminal,1)
+        self._secondary_pane, self._secondary_header, self._secondary_terminal = _make_pane(1)
         self._split_panel.addWidget(self._secondary_pane)
-
         # per-tab browsers are lazily created in _get_or_create_browser()
         self._term_splitter.addWidget(self._split_panel)
-        tv.addWidget(self._term_splitter,1)
+
+        # ── Panes 2 and 3 (bottom row) ────────────────────────────────────────
+        self._pane2_widget, self._pane2_header, self._pane2_terminal = _make_pane(2)
+        self._pane3_widget, self._pane3_header, self._pane3_terminal = _make_pane(3)
+        self._pane2_widget.setVisible(False)
+        self._pane3_widget.setVisible(False)
+        self._bot_splitter.addWidget(self._pane2_widget)
+        self._bot_splitter.addWidget(self._pane3_widget)
+
+        # Convenience lists (index == pane index)
+        self._terminals   =[self._main_terminal, self._secondary_terminal,
+                            self._pane2_terminal, self._pane3_terminal]
+        self._pane_widgets=[self._main_pane, self._secondary_pane,
+                            self._pane2_widget, self._pane3_widget]
+        self._pane_headers=[self._main_header, self._secondary_header,
+                            self._pane2_header, self._pane3_header]
+
+        tv.addWidget(self._outer_splitter, 1)
         self._notes_panel=NotesPanel()
         self._notes_panel.vault_unlock_requested.connect(self._on_vault_unlock_requested)
         self._notes_panel.vault_lock_requested.connect(self._on_vault_lock_requested)
@@ -3652,6 +3675,136 @@ class AIDEWindow(QMainWindow):
         sb.setStyleSheet(f"QStatusBar{{background:{C_PANEL.name()};color:{C_MUTED.name()};border-top:1px solid {C_SURFACE.name()};font-family:{FONT_FAMILY};font-size:11px;padding:0 8px;}}QStatusBar::item{{border:none;}}")
         self._cwd_bar=QLabel(); self._cwd_bar.setStyleSheet(f"color:{C_MUTED.name()};font-size:11px;background:transparent;padding:0;")
         sb.addWidget(self._cwd_bar,1)
+
+    # ── notes-panel / pane synchronisation ────────────────────────────────────
+    def _focused_tid(self) -> int:
+        """Session ID in the currently focused pane (-1 if no session assigned)."""
+        return self._pane_ids[self._focused_pane]
+
+    def _sync_notes_from_panel(self):
+        """Save notes-panel content to the focused pane's session (if any)."""
+        tid = self._focused_tid()
+        if tid < 0 or tid not in self.sessions: return
+        s = self.sessions[tid]
+        s.notes = self._notes_panel.get_notes()
+        s.tasks = self._notes_panel.get_tasks()
+        s.autostart_dir = self._notes_panel.get_autostart_dir()
+        s.autostart_cmd = self._notes_panel.get_autostart_cmd()
+        if self._vault.is_unlocked():
+            s.github_token_name = self._notes_panel.get_github_token_name()
+        v = self._notes_panel.get_variables()
+        if v is not None:
+            s.variables = v; self._vault.set_vars(tid, v)
+
+    def _sync_notes_to_panel(self, tid: int):
+        """Load session tid's data into the notes panel."""
+        if tid < 0 or tid not in self.sessions: return
+        s = self.sessions[tid]
+        token_names = list(self._vault.get_github_tokens().keys()) if self._vault.is_unlocked() else []
+        self._notes_panel.set_github_token_names(token_names, s.github_token_name)
+        self._notes_panel.load(s.notes, s.tasks, s.variables,
+                               s.autostart_dir, s.autostart_cmd, s.github_token_name)
+
+    def _set_focused_pane(self, idx: int):
+        """Change which pane is focused, syncing notes panel as needed."""
+        if idx == self._focused_pane: return
+        self._sync_notes_from_panel()
+        self._focused_pane = idx
+        self._sync_notes_to_panel(self._pane_ids[idx])
+
+    def _set_pane_session(self, pane_idx: int, tid: int):
+        """Assign session tid to pane pane_idx, refreshing the notes panel if needed."""
+        if pane_idx == 0:
+            self._switch_to(tid); return
+        if tid not in self.sessions: return
+        was_focused = (self._focused_pane == pane_idx)
+        if was_focused: self._sync_notes_from_panel()
+        self._pane_ids[pane_idx] = tid
+        self._terminals[pane_idx].set_session(self.sessions[tid])
+        if was_focused: self._sync_notes_to_panel(tid)
+        self._tab_bar.set_active(self.active_id,
+            next((self._pane_ids[i] for i in range(1,4) if self._pane_ids[i]>=0), -1))
+        self._update_split_headers()
+        self._terminals[pane_idx].setFocus()
+
+    def _add_split_pane(self, tid: int):
+        """Add tid as the next available pane (up to 4), or replace the focused pane."""
+        if tid not in self.sessions: return
+        # If already shown in any pane, just focus it
+        for i in range(self._num_panes):
+            if self._pane_ids[i] == tid:
+                self._set_focused_pane(i); self._terminals[i].setFocus()
+                self._update_split_headers(); return
+        if self._num_panes < 4:
+            new_idx = self._num_panes
+            self._num_panes += 1
+            self._pane_ids[new_idx] = tid
+            self._terminals[new_idx].set_session(self.sessions[tid])
+            self._terminals[new_idx].in_split = True
+            if new_idx == 1:
+                # Pane 1 lives inside _split_panel
+                self._split_panel.setCurrentWidget(self._secondary_pane)
+                self._split_panel.setVisible(True)
+                total = self._term_splitter.width()
+                self._term_splitter.setSizes([total//2, total//2])
+                threading.Thread(target=_tennis_serve_sound, daemon=True).start()
+            elif new_idx in (2, 3):
+                self._pane_widgets[new_idx].setVisible(True)
+                self._bot_splitter.setVisible(True)
+                # Split bottom row evenly
+                total = self._bot_splitter.width() or self._term_splitter.width()
+                if new_idx == 2:
+                    self._bot_splitter.setSizes([total, 0])
+                    # Also split outer vertically
+                    oh = self._outer_splitter.height()
+                    self._outer_splitter.setSizes([oh//2, oh//2])
+                else:
+                    self._bot_splitter.setSizes([total//2, total//2])
+            if not self.config.split_tip_shown and self._num_panes == 2:
+                self.config.split_tip_shown = True; self.config.save()
+                QTimer.singleShot(300, lambda: SplitTipDialog(self).exec())
+            if self._split_mode != "browse": self._split_mode = "terminal"
+        else:
+            # All 4 panes used — replace the focused one
+            self._set_pane_session(self._focused_pane, tid); return
+        for i in range(self._num_panes): self._terminals[i].in_split = True
+        self._tab_bar.set_active(self.active_id,
+            next((self._pane_ids[i] for i in range(1,4) if self._pane_ids[i]>=0), -1))
+        self._hotkey_bar.set_btn_active("split_term", self._num_panes > 1 and self._split_mode=="terminal")
+        self._update_split_headers()
+        self._update_status()
+
+    def _remove_pane(self, pane_idx: int):
+        """Close pane pane_idx (valid for idx 1-3).  Shifts higher panes down so no holes."""
+        if pane_idx < 1 or pane_idx >= self._num_panes: return
+        # Shift panes down to fill the gap
+        for i in range(pane_idx, self._num_panes - 1):
+            next_tid = self._pane_ids[i + 1]
+            self._pane_ids[i] = next_tid
+            self._terminals[i].set_session(self.sessions.get(next_tid) if next_tid >= 0 else None)
+        # Clear last slot
+        last = self._num_panes - 1
+        self._pane_ids[last] = -1
+        self._terminals[last].set_session(None)
+        if last == 1:
+            self._split_panel.setVisible(False)
+        else:
+            self._pane_widgets[last].setVisible(False)
+        self._num_panes -= 1
+        if self._num_panes <= 2:
+            self._bot_splitter.setVisible(False)
+        if self._num_panes == 1:
+            self._split_mode = "none"
+        # Clamp focused pane
+        if self._focused_pane >= self._num_panes:
+            self._focused_pane = 0
+            self._sync_notes_to_panel(self._pane_ids[0])
+        for i in range(4): self._terminals[i].in_split = (self._num_panes > 1)
+        if self._num_panes <= 2:
+            self._bot_splitter.setVisible(False)
+        if self._num_panes == 1:
+            self._split_mode = "none"
+        for i in range(4): self._terminals[i].in_split = (self._num_panes > 1)
 
     # ── tab lifecycle ──────────────────────────────────────────────────────────
     def _env_with_vars(self, session: "TermSession") -> dict:
@@ -3683,6 +3836,10 @@ class AIDEWindow(QMainWindow):
         self._vault.drop_tab(tid)
         if (bp := self._browsers.pop(tid, None)):
             self._split_panel.removeWidget(bp); bp.deleteLater()
+        # Remove from any split pane (idx 1-3)
+        for i in range(1, 4):
+            if self._pane_ids[i] == tid:
+                self._remove_pane(i)
         if self.active_id==tid: self._switch_to(next(iter(self.sessions)))
 
     def _switch_to(self,tid:int):
@@ -3693,38 +3850,33 @@ class AIDEWindow(QMainWindow):
             idx = list(self.sessions.keys()).index(tid) if tid in self.sessions else 0
             try: threading.Thread(target=_ping_pong_sound, args=(idx,), daemon=True).start()
             except: pass
-        if self.active_id>=0 and self.active_id in self.sessions:
-            self.sessions[self.active_id].notes=self._notes_panel.get_notes()
-            self.sessions[self.active_id].tasks=self._notes_panel.get_tasks()
-            self.sessions[self.active_id].autostart_dir=self._notes_panel.get_autostart_dir()
-            self.sessions[self.active_id].autostart_cmd=self._notes_panel.get_autostart_cmd()
-            # Only read the token selection when the vault is unlocked — a locked
-            # vault shows only "(none)" in the combo and would otherwise clobber
-            # the persisted selection for every tab on switch/save.
-            if self._vault.is_unlocked():
-                self.sessions[self.active_id].github_token_name=self._notes_panel.get_github_token_name()
-            v=self._notes_panel.get_variables()
-            if v is not None:
-                self.sessions[self.active_id].variables=v
-                self._vault.set_vars(self.active_id,v)
-            # capture screenshot of current terminal before leaving
-            if self.active_id != tid:
-                px = self._main_terminal.grab()
-                if not px.isNull():
-                    self.sessions[self.active_id]._screenshot = px
-                    try:
-                        SCREENSHOTS_DIR.mkdir(exist_ok=True)
-                        px.save(str(SCREENSHOTS_DIR / f"tab_{self.active_id}.png"))
-                    except: pass
-        self.active_id=tid; s=self.sessions[tid]
+        # Save current notes panel data to whichever session is focused in the panel.
+        # When pane 0 is focused, that's active_id; otherwise the notes panel belongs
+        # to a different pane whose session is NOT changing here.
+        if self._focused_pane == 0:
+            self._sync_notes_from_panel()
+        elif self.active_id >= 0 and self.active_id in self.sessions:
+            # Pane 0 is not focused — still capture screenshot before changing its session
+            pass
+        # Capture screenshot of pane 0 before leaving
+        if self.active_id >= 0 and self.active_id in self.sessions and self.active_id != tid:
+            px = self._main_terminal.grab()
+            if not px.isNull():
+                self.sessions[self.active_id]._screenshot = px
+                try:
+                    SCREENSHOTS_DIR.mkdir(exist_ok=True)
+                    px.save(str(SCREENSHOTS_DIR / f"tab_{self.active_id}.png"))
+                except: pass
+        self.active_id=tid; self._pane_ids[0]=tid; s=self.sessions[tid]
         self._main_terminal.set_session(s)
         w=self._main_terminal.width(); h=self._main_terminal.height()
         if w>0 and h>0:
             s.resize(max(1,w//self._main_terminal._cw),max(1,h//self._main_terminal._ch))
-        token_names = list(self._vault.get_github_tokens().keys()) if self._vault.is_unlocked() else []
-        self._notes_panel.set_github_token_names(token_names, s.github_token_name)
-        self._notes_panel.load(s.notes,s.tasks,s.variables,s.autostart_dir,s.autostart_cmd,s.github_token_name)
-        self._tab_bar.set_active(tid, self._secondary_id if self._split_mode=="terminal" else -1)
+        # Only update notes panel if pane 0 is the focused one
+        if self._focused_pane == 0:
+            self._sync_notes_to_panel(tid)
+        split_secondary = next((self._pane_ids[i] for i in range(1,4) if self._pane_ids[i]>=0), -1)
+        self._tab_bar.set_active(tid, split_secondary if self._split_mode=="terminal" else -1)
         self._main_terminal.update(); self._update_status()
         # Show the previous-session screenshot overlay only on the first
         # _switch_to after launch (during _load_session). User-initiated tab
@@ -3755,53 +3907,72 @@ class AIDEWindow(QMainWindow):
         if 0<=n<len(ids): self._switch_to(ids[n])
 
     # ── split view ─────────────────────────────────────────────────────────────
-    def _set_split(self,mode:str):
+    def _set_split(self, mode: str):
+        """Enter a layout mode: 'none' collapses all extra panes, 'terminal' adds pane 1,
+        'browse' opens a browser pane.  Calling with the current mode toggles off."""
         prev_mode = self._split_mode
-        if mode==self._split_mode: mode="none"
-        # Tennis SFX: serve when entering split, point-end when leaving
+        if mode == self._split_mode and mode in ("browse",): mode = "none"
         if mode != prev_mode:
             if mode != "none" and prev_mode == "none":
                 threading.Thread(target=_tennis_serve_sound, daemon=True).start()
             elif mode == "none" and prev_mode != "none":
                 threading.Thread(target=_tennis_point_sound, daemon=True).start()
-        self._split_mode=mode
-        if mode=="none":
-            self._split_panel.setVisible(False); self._secondary_terminal.set_session(None)
-        elif mode=="terminal":
-            if self._secondary_id<0 or self._secondary_id not in self.sessions:
-                self._secondary_id=self._create_secondary()
+        if mode == "none":
+            self._split_mode = "none"
+            # Hide and detach all extra panes
+            for i in range(3, 0, -1):
+                if self._pane_ids[i] >= 0 or i < self._num_panes:
+                    self._pane_ids[i] = -1
+                    self._terminals[i].set_session(None)
+                    if i == 1:
+                        self._split_panel.setVisible(False)
+                    else:
+                        self._pane_widgets[i].setVisible(False)
+            self._bot_splitter.setVisible(False)
+            self._secondary_id = -1
+            self._num_panes = 1
+            # Restore notes panel to pane 0 if it was on another pane
+            if self._focused_pane != 0:
+                self._focused_pane = 0
+                self._sync_notes_to_panel(self._pane_ids[0])
+            for t in self._terminals: t.in_split = False
+            self._terminals[0].setFocus()
+        elif mode == "terminal":
+            self._split_mode = "terminal"
+            if self._secondary_id < 0 or self._secondary_id not in self.sessions:
+                self._secondary_id = self._create_secondary()
             else:
-                self._secondary_terminal.set_session(self.sessions[self._secondary_id])
-            self._split_panel.setCurrentWidget(self._secondary_pane); self._split_panel.setVisible(True)
-            total=self._term_splitter.width()
-            self._term_splitter.setSizes([total//2,total//2])
-            # Show the one-time Tab-to-paste tip
+                self._terminals[1].set_session(self.sessions[self._secondary_id])
+            self._pane_ids[1] = self._secondary_id
+            self._num_panes = max(self._num_panes, 2)
+            self._split_panel.setCurrentWidget(self._secondary_pane)
+            self._split_panel.setVisible(True)
+            total = self._term_splitter.width()
+            self._term_splitter.setSizes([total // 2, total // 2])
+            for i in range(self._num_panes): self._terminals[i].in_split = True
             if not self.config.split_tip_shown:
-                self.config.split_tip_shown = True
-                self.config.save()
+                self.config.split_tip_shown = True; self.config.save()
                 QTimer.singleShot(300, lambda: SplitTipDialog(self).exec())
-        elif mode=="browse":
+        elif mode == "browse":
+            self._split_mode = "browse"
             bp = self._get_or_create_browser(self.active_id)
             self._split_panel.setCurrentWidget(bp); self._split_panel.setVisible(True)
-            total=self._term_splitter.width()
-            self._term_splitter.setSizes([total*6//10,total*4//10])
-            s=self.sessions.get(self.active_id)
+            total = self._term_splitter.width()
+            self._term_splitter.setSizes([total * 6 // 10, total * 4 // 10])
+            s = self.sessions.get(self.active_id)
             if s and not bp._url.text().strip():
                 url = s.browser_url or s.info.local_url
                 if url: bp.navigate(url)
-        self._hotkey_bar.set_btn_active("split_browse", self._split_mode=="browse")
-        self._hotkey_bar.set_btn_active("split_term",   self._split_mode=="terminal")
-        in_split = self._split_mode == "terminal"
-        self._main_terminal.in_split = in_split
-        self._secondary_terminal.in_split = in_split
+        self._hotkey_bar.set_btn_active("split_browse", self._split_mode == "browse")
+        self._hotkey_bar.set_btn_active("split_term", self._num_panes > 1 and self._split_mode == "terminal")
         self._update_split_headers()
         self._update_status()
 
-    def _create_secondary(self)->int:
-        tid=self._next_id; self._next_id+=1; s=TermSession(tid); s.custom_title="(split)"
-        self.sessions[tid]=s; s.start(self.config.shell or DEFAULT_SHELL,self.config.env_overrides)
-        self._tab_bar.add_card(s,self.config.card)
-        self._secondary_terminal.set_session(s); return tid
+    def _create_secondary(self) -> int:
+        tid = self._next_id; self._next_id += 1; s = TermSession(tid); s.custom_title = "(split)"
+        self.sessions[tid] = s; s.start(self.config.shell or DEFAULT_SHELL, self.config.env_overrides)
+        self._tab_bar.add_card(s, self.config.card)
+        self._terminals[1].set_session(s); return tid
 
     _HDR_FOCUSED   = f"background:{C_ACCENT.name()};color:#000;font-weight:600;font-size:11px;font-family:'JetBrains Mono',monospace;padding:0 8px;border-bottom:1px solid {C_ACCENT.name()};"
     _HDR_UNFOCUSED = f"background:{C_SURFACE.name()};color:{C_MUTED.name()};font-size:11px;font-family:'JetBrains Mono',monospace;padding:0 8px;border-bottom:1px solid #30363d;"
@@ -3818,86 +3989,75 @@ class AIDEWindow(QMainWindow):
 
     def _update_split_headers(self):
         """Show/update the name labels above each pane in terminal split mode."""
-        active = self._split_mode == "terminal"
-        self._main_header.setVisible(active)
-        self._secondary_header.setVisible(active)
-        if not active:
-            return
-        # Advance the spinner frame on each refresh
-        self._blink_phase_i = getattr(self, "_blink_phase_i", 0) + 1
+        active = self._num_panes > 1 and self._split_mode == "terminal"
+        # Advance spinner frame on each refresh when active
+        if active:
+            self._blink_phase_i = getattr(self, "_blink_phase_i", 0) + 1
+        _shortcuts = ["⌘1", "⌘2", "⌘3", "⌘4"]
 
         def _label(session, shortcut):
             title = session.effective_title() if session else "—"
             ind = self._header_indicator(session)
             return f"  {shortcut}  {ind + '  ' if ind else ''}{title}"
 
-        main_sess = self._main_terminal.session
-        sec_sess  = self._secondary_terminal.session
-        self._main_header.setText(_label(main_sess, "⌘1"))
-        self._secondary_header.setText(_label(sec_sess, "⌘2"))
-
-        main_focused = self._focused_pane == "main"
         def _style(session, is_focused):
-            if getattr(session, "waiting_input", False):
-                return self._HDR_WAITING
+            if getattr(session, "waiting_input", False): return self._HDR_WAITING
             return self._HDR_FOCUSED if is_focused else self._HDR_UNFOCUSED
-        self._main_header.setStyleSheet(_style(main_sess, main_focused))
-        self._secondary_header.setStyleSheet(_style(sec_sess, not main_focused))
+
+        for i, (hdr, term) in enumerate(zip(self._pane_headers, self._terminals)):
+            visible = active and i < self._num_panes
+            hdr.setVisible(visible)
+            if visible:
+                sess = term.session
+                hdr.setText(_label(sess, _shortcuts[i]))
+                hdr.setStyleSheet(_style(sess, i == self._focused_pane))
 
     def _on_focus_changed(self, _old, new):
         """Track which split pane last received keyboard focus."""
-        if self._split_mode != "terminal": return
+        if self._num_panes <= 1: return
         w = new
         while w:
-            if w is self._main_terminal:
-                self._focused_pane = "main"; self._update_split_headers(); return
-            if w is self._secondary_terminal:
-                self._focused_pane = "secondary"; self._update_split_headers(); return
+            for idx, term in enumerate(self._terminals):
+                if w is term and idx < self._num_panes:
+                    if idx != self._focused_pane:
+                        old_idx = self._focused_pane
+                        self._sync_notes_from_panel()
+                        self._focused_pane = idx
+                        self._sync_notes_to_panel(self._pane_ids[idx])
+                    self._update_split_headers()
+                    return
             w = w.parent() if callable(getattr(w, "parent", None)) else None
 
-    def _split_paste_to_secondary(self, text: str):
-        """Tab-paste: main → secondary."""
-        if self._split_mode != "terminal": return
-        src_s = self._main_terminal.session
-        dst_s = self._secondary_terminal.session
-        if dst_s:
-            dst_s.scroll_offset = 0
-            sender = src_s.effective_title() if src_s else "other pane"
-            payload = f"# incoming from [{sender}]\n{text}"
-            dst_s.write(payload.encode("utf-8"))
-            self._secondary_terminal.setFocus()
-            self._animate_split_ball(main_to_secondary=True)
-
-    def _split_paste_to_main(self, text: str):
-        """Tab-paste: secondary → main."""
-        if self._split_mode != "terminal": return
-        src_s = self._secondary_terminal.session
-        dst_s = self._main_terminal.session
-        if dst_s:
-            dst_s.scroll_offset = 0
-            sender = src_s.effective_title() if src_s else "other pane"
-            payload = f"# incoming from [{sender}]\n{text}"
-            dst_s.write(payload.encode("utf-8"))
-            self._main_terminal.setFocus()
-            self._animate_split_ball(main_to_secondary=False)
-
-    def _animate_split_ball(self, main_to_secondary: bool):
+    def _on_split_paste(self, src_idx: int, text: str):
+        """Tab-paste from pane src_idx to the next pane in circular order."""
+        if self._num_panes <= 1: return
+        dst_idx = (src_idx + 1) % self._num_panes
+        src_s = self._terminals[src_idx].session
+        dst_s = self._terminals[dst_idx].session
+        if not dst_s: return
+        dst_s.scroll_offset = 0
+        sender = src_s.effective_title() if src_s else "other pane"
+        payload = f"# incoming from [{sender}]\n{text}"
+        dst_s.write(payload.encode("utf-8"))
+        self._terminals[dst_idx].setFocus()
+        # Animate ball from source terminal to destination terminal
+        src_w = self._terminals[src_idx]; dst_w = self._terminals[dst_idx]
+        src_c = src_w.mapTo(self, src_w.rect().center())
+        dst_c = dst_w.mapTo(self, dst_w.rect().center())
+        self._ball_overlay.launch(QPointF(src_c), QPointF(dst_c))
         threading.Thread(target=_smash_sound, daemon=True).start()
-        src = self._main_terminal if main_to_secondary else self._secondary_terminal
-        dst = self._secondary_terminal if main_to_secondary else self._main_terminal
-        src_center = src.mapTo(self, src.rect().center())
-        dst_center = dst.mapTo(self, dst.rect().center())
-        self._ball_overlay.launch(QPointF(src_center), QPointF(dst_center))
 
     def _swap_focus(self):
-        if self._split_mode=="none": return
+        if self._num_panes <= 1 and self._split_mode != "browse": return
         threading.Thread(target=_ping_pong_sound, args=(99,), daemon=True).start()
-        if self._main_terminal.hasFocus():
-            if self._split_mode=="terminal": self._secondary_terminal.setFocus()
-            else:
+        if self._split_mode == "browse":
+            if self._main_terminal.hasFocus():
                 bp = self._browsers.get(self.active_id)
                 if bp: bp._url.setFocus()
-        else: self._main_terminal.setFocus()
+            else: self._main_terminal.setFocus()
+        else:
+            next_idx = (self._focused_pane + 1) % self._num_panes
+            self._terminals[next_idx].setFocus()
 
 
 
@@ -3957,13 +4117,14 @@ class AIDEWindow(QMainWindow):
 
     def _refresh_cards(self):
         self._blink_phase=not getattr(self,"_blink_phase",False)
-        secondary_id = self._secondary_id if self._split_mode=="terminal" else -1
+        split_ids = set(self._pane_ids[i] for i in range(1,4) if self._pane_ids[i]>=0) \
+                    if self._split_mode=="terminal" else set()
         for tid,s in self.sessions.items():
             card=self._tab_bar._card_map.get(tid)
             if card:
                 card._blink_phase=self._blink_phase
                 card._gear_tick=getattr(card,"_gear_tick",0)+1
-                card.mark_visible(tid==secondary_id)
+                card.mark_visible(tid in split_ids)
             self._tab_bar.refresh_card(tid)
         self._update_waiting_badge()
         self._update_split_headers()
@@ -3982,12 +4143,13 @@ class AIDEWindow(QMainWindow):
     # ── actions ────────────────────────────────────────────────────────────────
     def _dispatch_action(self,action:str):
         if action.startswith("goto_"): self.switch_to_index(int(action[5:])-1); return
-        if action == "focus_pane_1":
-            self._focused_pane = "main"; self._main_terminal.setFocus()
-            self._update_split_headers(); return
-        if action == "focus_pane_2":
-            self._focused_pane = "secondary"; self._secondary_terminal.setFocus()
-            self._update_split_headers(); return
+        if action.startswith("focus_pane_"):
+            n = int(action[11:]) - 1  # 0-indexed
+            if 0 <= n < self._num_panes:
+                self._set_focused_pane(n)
+                self._terminals[n].setFocus()
+                self._update_split_headers()
+            return
         if fn:=getattr(self,f"_action_{action}",None): fn()
 
     def _close_tab_with_confirm(self,tid:int):
@@ -4155,7 +4317,7 @@ class AIDEWindow(QMainWindow):
         self._notes_panel.focus_editor()
 
     def _set_font_size(self,size:int):
-        for w in (self._main_terminal,self._secondary_terminal): w.set_font_size(size)
+        for t in self._terminals: t.set_font_size(size)
 
     def _action_toggle_watch(self):
         if self.active_id<0: return
@@ -4163,8 +4325,8 @@ class AIDEWindow(QMainWindow):
         self._tab_bar.refresh_card(self.active_id); self._update_status()
 
     def _action_split_term(self):
-        # Already split with another terminal → toggle off.
-        if self._split_mode=="terminal":
+        # Already in terminal split → close all extra panes (toggle off).
+        if self._num_panes > 1 and self._split_mode == "terminal":
             self._set_split("none")
             return
         # Cancel picking mode if user clicks Split again.
@@ -4182,7 +4344,7 @@ class AIDEWindow(QMainWindow):
 
     def _action_split_browse(self): self._set_split("browse")
 
-    def _on_tab_clicked(self,tid:int):
+    def _on_tab_clicked(self, tid: int):
         """Tab-bar click handler. Routes to split-pick, focused-pane replace, or normal switch."""
         if self._split_picking:
             self._split_picking=False
@@ -4193,35 +4355,22 @@ class AIDEWindow(QMainWindow):
             return
         # In split-terminal mode: clicking a card replaces whichever pane is focused
         if self._split_mode == "terminal" and tid in self.sessions:
-            if self._focused_pane == "secondary":
-                self._secondary_id = tid
-                self._secondary_terminal.set_session(self.sessions[tid])
-                self._tab_bar.set_active(self.active_id, self._secondary_id)
-                self._update_split_headers()
-                self._secondary_terminal.setFocus()
+            if self._focused_pane > 0:
+                self._set_pane_session(self._focused_pane, tid)
                 return
         self._switch_to(tid)
 
     def _on_shift_tab_clicked(self, tid: int):
-        """Shift+click a tab → split current with it, or swap the secondary pane if already split."""
-        if tid == self.active_id: return
+        """Shift+click → add as a new split pane (up to 4), or replace the focused pane."""
         if tid not in self.sessions: return
-        if self._split_mode == "terminal":
-            # Already in split — swap the secondary pane to the clicked tab.
-            self._secondary_id = tid
-            self._secondary_terminal.set_session(self.sessions[tid])
-            self._tab_bar.set_active(self.active_id, self._secondary_id)
-            self._update_split_headers()
-            return
-        self._secondary_id = tid
-        self._set_split("terminal")
+        self._add_split_pane(tid)
 
     def _update_split_picking_ui(self):
         if self._split_picking:
             self._hotkey_bar.set_btn_active("split_term", True)
             self._hotkey_bar.update_info("⊟  Click a terminal in the sidebar to split with…  (click Split again to cancel)")
         else:
-            self._hotkey_bar.set_btn_active("split_term", self._split_mode=="terminal")
+            self._hotkey_bar.set_btn_active("split_term", self._num_panes > 1 and self._split_mode=="terminal")
             self._update_status()
     def _action_split_focus(self):  self._swap_focus()
 
@@ -4268,8 +4417,10 @@ class AIDEWindow(QMainWindow):
 
     def _on_gh_token_selected(self, name: str):
         """User picked a new token in the notes panel — persist + re-export into live shell."""
-        if self.active_id < 0 or self.active_id not in self.sessions: return
-        s = self.sessions[self.active_id]
+        # The notes panel always reflects the focused pane's session
+        tid = self._focused_tid()
+        if tid < 0 or tid not in self.sessions: return
+        s = self.sessions[tid]
         if s.github_token_name == name: return
         s.github_token_name = name
         # Persist immediately so the selection survives an unexpected exit.
@@ -4297,11 +4448,12 @@ class AIDEWindow(QMainWindow):
                 for s in self.sessions.values():
                     if s.github_token_name and s.github_token_name not in new_tokens:
                         s.github_token_name = ""
-                # Refresh the notes-panel selector for the active tab
-                if self.active_id in self.sessions:
+                # Refresh the notes-panel selector for the focused pane
+                ftid = self._focused_tid()
+                if ftid in self.sessions:
                     self._notes_panel.set_github_token_names(
                         list(new_tokens.keys()),
-                        self.sessions[self.active_id].github_token_name)
+                        self.sessions[ftid].github_token_name)
 
     def _action_configure_notifs(self):
         dlg=NotifConfigDialog(self.config.notif,self.config.auto_restart,self)
@@ -4340,7 +4492,8 @@ class AIDEWindow(QMainWindow):
         parts.append(s.effective_title())
         if s.info.ssh_host:  parts.append(f"⬡ {s.info.ssh_host}")
         if s.info.local_url: parts.append(f"🌐 {s.info.local_url}")
-        if self._split_mode!="none": parts.append(f"[split: {self._split_mode}]")
+        if self._num_panes > 1: parts.append(f"[{self._num_panes} panes]")
+        elif self._split_mode=="browse": parts.append("[split: browse]")
         self._hotkey_bar.update_info("  ".join(parts))
         full=s.info.cwd_full or s.info.cwd
         self._cwd_bar.setText(f"📁  {full}" if full else "")
@@ -4383,12 +4536,13 @@ class AIDEWindow(QMainWindow):
             s.variables=self._vault.get_vars(tid)
             self._inject_vars_into_shell(s)
         self._notes_panel.set_vault_unlocked(True)
-        # Refresh current tab's table + GitHub token selector
-        if self.active_id>=0 and self.active_id in self.sessions:
-            self._notes_panel.apply_variables(self.sessions[self.active_id].variables)
+        # Refresh the focused pane's table + GitHub token selector
+        ftid = self._focused_tid()
+        if ftid >= 0 and ftid in self.sessions:
+            self._notes_panel.apply_variables(self.sessions[ftid].variables)
             self._notes_panel.set_github_token_names(
                 list(self._vault.get_github_tokens().keys()),
-                self.sessions[self.active_id].github_token_name)
+                self.sessions[ftid].github_token_name)
 
     def _gh_token_exports(self, s: "TermSession") -> str:
         """Return `export GITHUB_TOKEN=…; export GH_TOKEN=…; ` for this session, or ''."""
@@ -4418,12 +4572,13 @@ class AIDEWindow(QMainWindow):
             pass
 
     def _on_vault_lock_requested(self):
-        # Capture current UI edits before locking
-        if self.active_id>=0 and self.active_id in self.sessions:
+        # Capture current UI edits before locking (from whichever pane is in the notes panel)
+        ftid = self._focused_tid()
+        if ftid >= 0 and ftid in self.sessions:
             v=self._notes_panel.get_variables()
             if v is not None:
-                self.sessions[self.active_id].variables=v
-                self._vault.set_vars(self.active_id,v)
+                self.sessions[ftid].variables=v
+                self._vault.set_vars(ftid,v)
         # Persist and sync all tabs
         for tid,s in self.sessions.items():
             self._vault.set_vars(tid,s.variables)
@@ -4436,20 +4591,9 @@ class AIDEWindow(QMainWindow):
 
     # ── persistence ────────────────────────────────────────────────────────────
     def _save_session(self):
+        # Flush the notes panel into whichever session it's currently showing
+        self._sync_notes_from_panel()
         if self.active_id>=0 and self.active_id in self.sessions:
-            self.sessions[self.active_id].notes=self._notes_panel.get_notes()
-            self.sessions[self.active_id].tasks=self._notes_panel.get_tasks()
-            self.sessions[self.active_id].autostart_dir=self._notes_panel.get_autostart_dir()
-            self.sessions[self.active_id].autostart_cmd=self._notes_panel.get_autostart_cmd()
-            # Only read the token selection when the vault is unlocked — a locked
-            # vault shows only "(none)" in the combo and would otherwise clobber
-            # the persisted selection for every tab on switch/save.
-            if self._vault.is_unlocked():
-                self.sessions[self.active_id].github_token_name=self._notes_panel.get_github_token_name()
-            v=self._notes_panel.get_variables()
-            if v is not None:
-                self.sessions[self.active_id].variables=v
-                self._vault.set_vars(self.active_id,v)
             bp=self._browsers.get(self.active_id)
             if bp: self.sessions[self.active_id].browser_url=bp._url.text().strip()
         data={"tabs":{str(k):v.to_dict() for k,v in self.sessions.items()},
