@@ -115,7 +115,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.10.3"
+VERSION      = "2.11.0"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -302,6 +302,9 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.11.0": [
+        ("🐙", "GitHub token manager", "Ribbon 🐙 → manage named GitHub PATs; sidebar combo selects which is active; injected as GITHUB_TOKEN and GH_TOKEN in terminals"),
+    ],
     "2.10.1": [
         ("⌘", "Cmd+1 / Cmd+2 pane focus", "Split headers show ⌘1 and ⌘2 shortcuts; pressing them focuses that pane"),
     ],
@@ -539,6 +542,8 @@ class AppConfig:
     shell:          str              = ""
     auto_restart:   bool             = False
     env_overrides:  Dict[str,str]    = field(default_factory=dict)
+    github_tokens:  Dict[str,str]    = field(default_factory=dict)   # name → token
+    active_github_token: str         = ""                            # name of selected token
     last_seen_mtime:float            = 0.0   # mtime of AIDE.py at last run
     last_seen_version:str            = ""    # version string at last run, e.g. "2.1.1"
     split_tip_shown:bool             = False  # one-time split-view tip shown
@@ -546,6 +551,8 @@ class AppConfig:
         return {"notif":self.notif.to_dict(),"card":self.card.to_dict(),
                 "shell":self.shell,"auto_restart":self.auto_restart,
                 "env_overrides":self.env_overrides,
+                "github_tokens":self.github_tokens,
+                "active_github_token":self.active_github_token,
                 "last_seen_mtime":self.last_seen_mtime,
                 "last_seen_version":self.last_seen_version,
                 "split_tip_shown":self.split_tip_shown}
@@ -555,6 +562,8 @@ class AppConfig:
                    card=CardConfig.from_dict(d.get("card",{})),
                    shell=d.get("shell",""),auto_restart=d.get("auto_restart",False),
                    env_overrides=d.get("env_overrides",{}),
+                   github_tokens=d.get("github_tokens",{}),
+                   active_github_token=d.get("active_github_token",""),
                    last_seen_mtime=float(d.get("last_seen_mtime",0.0)),
                    last_seen_version=d.get("last_seen_version",""),
                    split_tip_shown=bool(d.get("split_tip_shown",False)))
@@ -1288,7 +1297,7 @@ class TerminalWidget(QWidget):
         Qt.Key.Key_Bar:"split_term",    Qt.Key.Key_B:"split_browse",
         Qt.Key.Key_C:"configure_cards",
         Qt.Key.Key_S:"configure_notifs",Qt.Key.Key_D:"show_notif_detail",
-        Qt.Key.Key_K:"open_settings",
+        Qt.Key.Key_K:"open_settings",  Qt.Key.Key_G:"github_tokens",
     }
 
     def __init__(self, session:Optional[TermSession]=None, parent=None):
@@ -2087,6 +2096,7 @@ class TabBar(QWidget):
     rename_requested   = pyqtSignal(int)
     close_requested    = pyqtSignal(int)
     tabs_reordered     = pyqtSignal(list)
+    github_token_changed = pyqtSignal(str)  # emits the selected token name
 
     def __init__(self, parent=None):
         super().__init__(parent); self.setFixedWidth(220)
@@ -2119,6 +2129,21 @@ class TabBar(QWidget):
         btn = QPushButton("  +  New Terminal"); btn.setFixedHeight(34)
         btn.setStyleSheet(f"QPushButton{{background:{C_SURFACE.name()};color:{C_MUTED.name()};border:none;font-size:12px;text-align:left;padding-left:12px;}}QPushButton:hover{{background:{C_ACCENT.name()}22;color:{C_ACCENT.name()};}}")
         btn.clicked.connect(self.new_tab_clicked); ml.addWidget(btn)
+        # GitHub token selector
+        self._gh_bar = QWidget(); self._gh_bar.setFixedHeight(28)
+        self._gh_bar.setStyleSheet(f"background:{C_SURFACE.name()};border-top:1px solid #21262d;")
+        gh_lay = QHBoxLayout(self._gh_bar); gh_lay.setContentsMargins(8, 0, 6, 0); gh_lay.setSpacing(4)
+        gh_lbl = QLabel("🐙"); gh_lbl.setStyleSheet(f"color:{C_MUTED.name()};font-size:10px;background:transparent;")
+        self._gh_combo = QComboBox(); self._gh_combo.setFixedHeight(20)
+        self._gh_combo.setStyleSheet(
+            f"QComboBox{{background:{C_PANEL.name()};color:{C_FG.name()};border:1px solid #30363d;"
+            f"border-radius:3px;font-size:10px;padding:0 4px;font-family:'JetBrains Mono',monospace;}}"
+            f"QComboBox::drop-down{{border:none;width:14px;}}"
+            f"QComboBox QAbstractItemView{{background:{C_SURFACE.name()};color:{C_FG.name()};"
+            f"border:1px solid #30363d;selection-background-color:{C_ACCENT.name()}44;}}")
+        self._gh_combo.setCursor(Qt.CursorShape.PointingHandCursor)
+        gh_lay.addWidget(gh_lbl); gh_lay.addWidget(self._gh_combo, 1)
+        ml.addWidget(self._gh_bar)
         # Dashboard footer
         self._dash_footer = QWidget(); self._dash_footer.setFixedHeight(28)
         self._dash_footer.setStyleSheet(f"background:{C_SURFACE.name()};border-top:1px solid #21262d;")
@@ -2140,6 +2165,25 @@ class TabBar(QWidget):
         self._tag_pills: dict = {}
         self._collapsed_groups: set = set()
         self._group_headers: list = []
+
+    def set_github_tokens(self, tokens: Dict[str, str], active: str):
+        """Populate the GitHub token selector combo box."""
+        self._gh_combo.blockSignals(True)
+        self._gh_combo.clear()
+        self._gh_combo.addItem("(none)")
+        for name in sorted(tokens):
+            self._gh_combo.addItem(name)
+        idx = self._gh_combo.findText(active) if active else 0
+        self._gh_combo.setCurrentIndex(max(0, idx))
+        self._gh_combo.blockSignals(False)
+        try: self._gh_combo.currentTextChanged.disconnect()
+        except: pass
+        self._gh_combo.currentTextChanged.connect(self._on_gh_combo_changed)
+        self._gh_bar.setVisible(self._gh_combo.count() > 1)
+
+    def _on_gh_combo_changed(self, text: str):
+        name = "" if text == "(none)" else text
+        self.github_token_changed.emit(name)
 
     def set_dashboard_url(self, url: str):
         self._dash_url.setText(url)
@@ -2438,6 +2482,7 @@ class HotkeyBar(QWidget):
         ("📌","Paste","clipboard_menu","^B-v"),
         ("🧹","Clear","clear_line","clear input"),
         ("🔑","API Keys","open_settings","^B-k"),
+        ("🐙","GitHub","github_tokens","^B-g"),
         ("🔔","Notifs","configure_notifs","^B-s"),
         ("🃏","Cards","configure_cards","^B-c"),
     ]
@@ -3336,6 +3381,65 @@ class SettingsDialog(QDialog):
     def get_result(self)->Optional[dict]: return self._result
 
 
+class GitHubTokensDialog(QDialog):
+    """Manage named GitHub tokens (PATs)."""
+    def __init__(self, tokens: Dict[str, str], parent=None):
+        super().__init__(parent); self.setWindowTitle("GitHub Tokens")
+        self.setStyleSheet(_dlg_ss()); self.setFixedWidth(520); self._result = None
+        lay = QVBoxLayout(self); lay.setContentsMargins(20, 20, 20, 20); lay.setSpacing(12)
+        lay.addWidget(QLabel("<b>GitHub Tokens</b>  <span style='color:#7d8590;font-size:11px;'>"
+                             "set as GITHUB_TOKEN &amp; GH_TOKEN env vars</span>"))
+        self._rows: list = []
+        self._form = QVBoxLayout(); self._form.setSpacing(6)
+        lay.addLayout(self._form)
+        for name, token in tokens.items():
+            self._add_row(name, token)
+        add_btn = QPushButton("+ Add token")
+        add_btn.setStyleSheet(
+            f"QPushButton{{background:{C_SURFACE.name()};color:{C_ACCENT.name()};border:none;"
+            f"border-radius:4px;padding:6px 12px;font-size:12px;}}"
+            f"QPushButton:hover{{background:{C_ACCENT.name()}22;}}")
+        add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        add_btn.clicked.connect(lambda: self._add_row("", ""))
+        lay.addWidget(add_btn)
+        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        _primary_btn(bb.button(QDialogButtonBox.StandardButton.Save))
+        bb.accepted.connect(self._save); bb.rejected.connect(self.reject); lay.addWidget(bb)
+
+    def _add_row(self, name: str, token: str):
+        row = QWidget()
+        rl = QHBoxLayout(row); rl.setContentsMargins(0, 0, 0, 0); rl.setSpacing(6)
+        name_f = QLineEdit(name); name_f.setPlaceholderText("Name (e.g. work)")
+        name_f.setFixedWidth(120)
+        tok_f = QLineEdit(token); tok_f.setPlaceholderText("ghp_…")
+        tok_f.setEchoMode(QLineEdit.EchoMode.Password)
+        rm_btn = QPushButton("✕"); rm_btn.setFixedSize(24, 24)
+        rm_btn.setStyleSheet(
+            f"QPushButton{{background:transparent;color:{C_MUTED.name()};border:none;font-size:11px;}}"
+            f"QPushButton:hover{{color:#ff6b6b;}}")
+        rm_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        rm_btn.clicked.connect(lambda: self._remove_row(row))
+        rl.addWidget(name_f); rl.addWidget(tok_f, 1); rl.addWidget(rm_btn)
+        self._form.addWidget(row)
+        self._rows.append((row, name_f, tok_f))
+
+    def _remove_row(self, row):
+        self._rows = [(r, n, t) for r, n, t in self._rows if r is not row]
+        row.deleteLater()
+
+    def _save(self):
+        self._result = {}
+        for _, name_f, tok_f in self._rows:
+            n = name_f.text().strip()
+            t = tok_f.text().strip()
+            if n and t:
+                self._result[n] = t
+        self.accept()
+
+    def get_result(self) -> Optional[Dict[str, str]]:
+        return self._result
+
+
 class AIDEWindow(QMainWindow):
     def __init__(self,shell:str=""):
         super().__init__()
@@ -3414,6 +3518,8 @@ class AIDEWindow(QMainWindow):
         self._tab_bar.rename_requested.connect(self._rename_tab_by_id)
         self._tab_bar.close_requested.connect(self._close_tab_with_confirm)
         self._tab_bar.tabs_reordered.connect(self._on_tabs_reordered)
+        self._tab_bar.github_token_changed.connect(self._on_github_token_changed)
+        self._tab_bar.set_github_tokens(self.config.github_tokens, self.config.active_github_token)
         ml.addWidget(self._tab_bar)
         term_area=QWidget(); term_area.setStyleSheet(f"background:{C_BG.name()};")
         tv=QVBoxLayout(term_area); tv.setContentsMargins(0,0,0,0); tv.setSpacing(0)
@@ -3480,8 +3586,14 @@ class AIDEWindow(QMainWindow):
 
     # ── tab lifecycle ──────────────────────────────────────────────────────────
     def _env_with_vars(self, session: "TermSession") -> dict:
-        """Merge config env_overrides with vault variables for this session."""
+        """Merge config env_overrides, active GitHub token, and vault variables."""
         env = dict(self.config.env_overrides)
+        # Inject the active GitHub token as GITHUB_TOKEN and GH_TOKEN
+        name = self.config.active_github_token
+        token = self.config.github_tokens.get(name, "")
+        if token:
+            env["GITHUB_TOKEN"] = token
+            env["GH_TOKEN"] = token
         env.update(session.variables)   # vault vars take precedence
         return env
 
@@ -4053,6 +4165,22 @@ class AIDEWindow(QMainWindow):
             if r:
                 self.config.shell=r["shell"]; self.config.env_overrides=r["env_overrides"]
                 self.config.save(); self._info_bar._refresh()
+
+    def _action_github_tokens(self):
+        dlg = GitHubTokensDialog(self.config.github_tokens, self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            tokens = dlg.get_result()
+            if tokens is not None:
+                self.config.github_tokens = tokens
+                # If the active token was removed, clear it
+                if self.config.active_github_token not in tokens:
+                    self.config.active_github_token = ""
+                self.config.save()
+                self._tab_bar.set_github_tokens(tokens, self.config.active_github_token)
+
+    def _on_github_token_changed(self, name: str):
+        self.config.active_github_token = name
+        self.config.save()
 
     def _action_configure_notifs(self):
         dlg=NotifConfigDialog(self.config.notif,self.config.auto_restart,self)
