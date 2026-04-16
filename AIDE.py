@@ -115,7 +115,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.13.0"
+VERSION      = "2.13.1"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -302,6 +302,9 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.13.1": [
+        ("⌨", "Ctrl+↑/↓ navigates the sidebar", "Press Ctrl+Up / Ctrl+Down in any terminal pane to jump to the previous/next terminal in the left sidebar"),
+    ],
     "2.13.0": [
         ("⊞", "Up to 4 split panels", "Shift+click a tab card to add it as a new split pane — repeat up to 4 (2×2 grid); Cmd+1–4 focus each pane; the right sidebar always shows the focused pane's notes/vars/token"),
     ],
@@ -1587,6 +1590,10 @@ class TerminalWidget(QWidget):
             self.prefix_action.emit("close_tab"); return
         if ctrl and key==K.Key_Tab:
             self.prefix_action.emit("next_tab" if not shift else "prev_tab"); return
+        if ctrl and not shift and key==K.Key_Up:
+            self.prefix_action.emit("prev_tab"); return
+        if ctrl and not shift and key==K.Key_Down:
+            self.prefix_action.emit("next_tab"); return
         if ctrl and not shift and K.Key_1<=key<=K.Key_9:
             n = key - K.Key_0
             if self.in_split and 1 <= n <= 4:
