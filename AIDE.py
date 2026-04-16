@@ -115,7 +115,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.12.0"
+VERSION      = "2.12.1"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -302,6 +302,9 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.12.1": [
+        ("💬", "Status in split headers & cards", "Split pane header now shows spinner while Claude works and 💬 while waiting, with a highlighted style when waiting; tab card icon slot also shows 💬 for waiting"),
+    ],
     "2.12.0": [
         ("🐙", "Per-terminal GitHub token", "GitHub token selector moved to the right-side Autostart section; each tab picks its own token, injected as GITHUB_TOKEN and GH_TOKEN before the autostart command runs"),
     ],
@@ -1827,7 +1830,7 @@ class TabCard(QFrame):
         title_row=QWidget(); title_row.setStyleSheet("background:transparent;")
         tr=QHBoxLayout(title_row); tr.setContentsMargins(0,0,0,0); tr.setSpacing(4)
         # Fixed-width icon slot so title text always starts at the same column
-        self._icon_lbl=QLabel(); self._icon_lbl.setFixedWidth(16)
+        self._icon_lbl=QLabel(); self._icon_lbl.setFixedWidth(18)
         self._icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._icon_lbl.setStyleSheet("color:#8b949e;font-size:11px;background:transparent;")
         tr.addWidget(self._icon_lbl)
@@ -1877,13 +1880,20 @@ class TabCard(QFrame):
             self._task_badge.setVisible(False)
         # Unread dot
         self._unread_dot.setVisible(self._unread)
-        # Icon label (fixed-width slot): spinner when active, watch eye, or app icon
-        if thinking or working:
+        # Icon label (fixed-width slot): waiting → speech bubble, working/thinking → spinner,
+        # watching → eye, otherwise → app icon
+        if waiting:
+            self._icon_lbl.setText("💬")
+            self._icon_lbl.setStyleSheet(f"color:{C_ACCENT.name()};font-size:12px;background:transparent;")
+        elif thinking or working:
             self._icon_lbl.setText(self._SPIN_FRAMES[getattr(self,"_gear_tick",0)%len(self._SPIN_FRAMES)])
+            self._icon_lbl.setStyleSheet(f"color:{C_ACCENT.name()};font-size:12px;background:transparent;")
         elif s.watching:
             self._icon_lbl.setText("👁")
+            self._icon_lbl.setStyleSheet("color:#8b949e;font-size:11px;background:transparent;")
         else:
             self._icon_lbl.setText(_app_icon(i.last_cmd) or "")
+            self._icon_lbl.setStyleSheet("color:#8b949e;font-size:11px;background:transparent;")
         # Title label: tags (accent, optional) + title text
         _acc = C_ACCENT.name()
         show_tags = getattr(self.cfg, "show_tags", True)
@@ -3741,8 +3751,18 @@ class AIDEWindow(QMainWindow):
         self._tab_bar.add_card(s,self.config.card)
         self._secondary_terminal.set_session(s); return tid
 
-    _HDR_FOCUSED  = f"background:{C_ACCENT.name()};color:#000;font-weight:600;font-size:11px;font-family:'JetBrains Mono',monospace;padding:0 8px;border-bottom:1px solid {C_ACCENT.name()};"
-    _HDR_UNFOCUSED= f"background:{C_SURFACE.name()};color:{C_MUTED.name()};font-size:11px;font-family:'JetBrains Mono',monospace;padding:0 8px;border-bottom:1px solid #30363d;"
+    _HDR_FOCUSED   = f"background:{C_ACCENT.name()};color:#000;font-weight:600;font-size:11px;font-family:'JetBrains Mono',monospace;padding:0 8px;border-bottom:1px solid {C_ACCENT.name()};"
+    _HDR_UNFOCUSED = f"background:{C_SURFACE.name()};color:{C_MUTED.name()};font-size:11px;font-family:'JetBrains Mono',monospace;padding:0 8px;border-bottom:1px solid #30363d;"
+    _HDR_WAITING   = f"background:#1f2d3d;color:{C_ACCENT.name()};font-weight:700;font-size:11px;font-family:'JetBrains Mono',monospace;padding:0 8px;border-bottom:1px solid {C_ACCENT.name()};"
+    _SPIN_FRAMES   = ("⣾","⣽","⣻","⢿","⡿","⣟","⣯","⣷")
+
+    def _header_indicator(self, session) -> str:
+        """Return a short status prefix for the pane header based on Claude state."""
+        if not session: return ""
+        if getattr(session, "waiting_input", False): return "💬"
+        if getattr(session, "claude_working", False) or getattr(session, "claude_thinking", False):
+            return self._SPIN_FRAMES[getattr(self, "_blink_phase_i", 0) % len(self._SPIN_FRAMES)]
+        return ""
 
     def _update_split_headers(self):
         """Show/update the name labels above each pane in terminal split mode."""
@@ -3751,14 +3771,26 @@ class AIDEWindow(QMainWindow):
         self._secondary_header.setVisible(active)
         if not active:
             return
+        # Advance the spinner frame on each refresh
+        self._blink_phase_i = getattr(self, "_blink_phase_i", 0) + 1
+
         def _label(session, shortcut):
             title = session.effective_title() if session else "—"
-            return f"  {shortcut}  {title}"
-        self._main_header.setText(_label(self._main_terminal.session, "⌘1"))
-        self._secondary_header.setText(_label(self._secondary_terminal.session, "⌘2"))
+            ind = self._header_indicator(session)
+            return f"  {shortcut}  {ind + '  ' if ind else ''}{title}"
+
+        main_sess = self._main_terminal.session
+        sec_sess  = self._secondary_terminal.session
+        self._main_header.setText(_label(main_sess, "⌘1"))
+        self._secondary_header.setText(_label(sec_sess, "⌘2"))
+
         main_focused = self._focused_pane == "main"
-        self._main_header.setStyleSheet(self._HDR_FOCUSED if main_focused else self._HDR_UNFOCUSED)
-        self._secondary_header.setStyleSheet(self._HDR_FOCUSED if not main_focused else self._HDR_UNFOCUSED)
+        def _style(session, is_focused):
+            if getattr(session, "waiting_input", False):
+                return self._HDR_WAITING
+            return self._HDR_FOCUSED if is_focused else self._HDR_UNFOCUSED
+        self._main_header.setStyleSheet(_style(main_sess, main_focused))
+        self._secondary_header.setStyleSheet(_style(sec_sess, not main_focused))
 
     def _on_focus_changed(self, _old, new):
         """Track which split pane last received keyboard focus."""
