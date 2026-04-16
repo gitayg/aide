@@ -115,7 +115,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.11.0"
+VERSION      = "2.11.1"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -542,8 +542,7 @@ class AppConfig:
     shell:          str              = ""
     auto_restart:   bool             = False
     env_overrides:  Dict[str,str]    = field(default_factory=dict)
-    github_tokens:  Dict[str,str]    = field(default_factory=dict)   # name → token
-    active_github_token: str         = ""                            # name of selected token
+    active_github_token: str         = ""    # name of selected token (tokens in vault)
     last_seen_mtime:float            = 0.0   # mtime of AIDE.py at last run
     last_seen_version:str            = ""    # version string at last run, e.g. "2.1.1"
     split_tip_shown:bool             = False  # one-time split-view tip shown
@@ -551,7 +550,6 @@ class AppConfig:
         return {"notif":self.notif.to_dict(),"card":self.card.to_dict(),
                 "shell":self.shell,"auto_restart":self.auto_restart,
                 "env_overrides":self.env_overrides,
-                "github_tokens":self.github_tokens,
                 "active_github_token":self.active_github_token,
                 "last_seen_mtime":self.last_seen_mtime,
                 "last_seen_version":self.last_seen_version,
@@ -562,7 +560,6 @@ class AppConfig:
                    card=CardConfig.from_dict(d.get("card",{})),
                    shell=d.get("shell",""),auto_restart=d.get("auto_restart",False),
                    env_overrides=d.get("env_overrides",{}),
-                   github_tokens=d.get("github_tokens",{}),
                    active_github_token=d.get("active_github_token",""),
                    last_seen_mtime=float(d.get("last_seen_mtime",0.0)),
                    last_seen_version=d.get("last_seen_version",""),
@@ -924,6 +921,20 @@ class SecureVault:
     def drop_tab(self, tab_id:int):
         self._data.pop(str(tab_id), None)
         if self.is_unlocked(): self.flush()
+
+    # ── GitHub tokens (stored alongside tab vars) ─────────────────────────────
+    _GH_KEY = "_github_tokens"
+
+    def get_github_tokens(self) -> Dict[str, str]:
+        if not self.is_unlocked(): return {}
+        return dict(self._data.get(self._GH_KEY, {}))
+
+    def set_github_tokens(self, tokens: Dict[str, str]):
+        if not self.is_unlocked(): return
+        if tokens:
+            self._data[self._GH_KEY] = dict(tokens)
+        else:
+            self._data.pop(self._GH_KEY, None)
 
     def flush(self):
         """Re-encrypt in-memory data and persist to disk. No-op if locked."""
@@ -3519,7 +3530,6 @@ class AIDEWindow(QMainWindow):
         self._tab_bar.close_requested.connect(self._close_tab_with_confirm)
         self._tab_bar.tabs_reordered.connect(self._on_tabs_reordered)
         self._tab_bar.github_token_changed.connect(self._on_github_token_changed)
-        self._tab_bar.set_github_tokens(self.config.github_tokens, self.config.active_github_token)
         ml.addWidget(self._tab_bar)
         term_area=QWidget(); term_area.setStyleSheet(f"background:{C_BG.name()};")
         tv=QVBoxLayout(term_area); tv.setContentsMargins(0,0,0,0); tv.setSpacing(0)
@@ -3588,12 +3598,13 @@ class AIDEWindow(QMainWindow):
     def _env_with_vars(self, session: "TermSession") -> dict:
         """Merge config env_overrides, active GitHub token, and vault variables."""
         env = dict(self.config.env_overrides)
-        # Inject the active GitHub token as GITHUB_TOKEN and GH_TOKEN
+        # Inject the active GitHub token from the vault
         name = self.config.active_github_token
-        token = self.config.github_tokens.get(name, "")
-        if token:
-            env["GITHUB_TOKEN"] = token
-            env["GH_TOKEN"] = token
+        if name and self._vault.is_unlocked():
+            token = self._vault.get_github_tokens().get(name, "")
+            if token:
+                env["GITHUB_TOKEN"] = token
+                env["GH_TOKEN"] = token
         env.update(session.variables)   # vault vars take precedence
         return env
 
@@ -4167,16 +4178,20 @@ class AIDEWindow(QMainWindow):
                 self.config.save(); self._info_bar._refresh()
 
     def _action_github_tokens(self):
-        dlg = GitHubTokensDialog(self.config.github_tokens, self)
+        if not self._vault.is_unlocked():
+            self._on_vault_unlock_requested()
+            if not self._vault.is_unlocked(): return
+        tokens = self._vault.get_github_tokens()
+        dlg = GitHubTokensDialog(tokens, self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            tokens = dlg.get_result()
-            if tokens is not None:
-                self.config.github_tokens = tokens
-                # If the active token was removed, clear it
-                if self.config.active_github_token not in tokens:
+            new_tokens = dlg.get_result()
+            if new_tokens is not None:
+                self._vault.set_github_tokens(new_tokens)
+                self._vault.flush()
+                if self.config.active_github_token not in new_tokens:
                     self.config.active_github_token = ""
-                self.config.save()
-                self._tab_bar.set_github_tokens(tokens, self.config.active_github_token)
+                    self.config.save()
+                self._tab_bar.set_github_tokens(new_tokens, self.config.active_github_token)
 
     def _on_github_token_changed(self, name: str):
         self.config.active_github_token = name
@@ -4265,6 +4280,9 @@ class AIDEWindow(QMainWindow):
         # Refresh current tab's table
         if self.active_id>=0 and self.active_id in self.sessions:
             self._notes_panel.apply_variables(self.sessions[self.active_id].variables)
+        # Refresh GitHub token selector from the vault
+        self._tab_bar.set_github_tokens(
+            self._vault.get_github_tokens(), self.config.active_github_token)
 
     def _inject_vars_into_shell(self, s: "TermSession"):
         """Silently export vault variables into an already-running shell.
@@ -4299,6 +4317,7 @@ class AIDEWindow(QMainWindow):
         for s in self.sessions.values(): s.variables={}
         self._vault.lock()
         self._notes_panel.set_vault_unlocked(False)
+        self._tab_bar.set_github_tokens({}, "")
 
     # ── persistence ────────────────────────────────────────────────────────────
     def _save_session(self):
