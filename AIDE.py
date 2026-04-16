@@ -115,7 +115,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.10.0"
+VERSION      = "2.10.1"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -302,6 +302,9 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.10.1": [
+        ("⌘", "Cmd+1 / Cmd+2 pane focus", "Split headers show ⌘1 and ⌘2 shortcuts; pressing them focuses that pane"),
+    ],
     "2.10.0": [
         ("⚖", "AGPL-3.0 license", "AIDE is now licensed under the GNU Affero GPL v3.0 or later — see LICENSE in the repo root"),
     ],
@@ -1544,7 +1547,10 @@ class TerminalWidget(QWidget):
         if ctrl and key==K.Key_Tab:
             self.prefix_action.emit("next_tab" if not shift else "prev_tab"); return
         if ctrl and not shift and K.Key_1<=key<=K.Key_9:
-            self.prefix_action.emit(f"goto_{key-K.Key_0}"); return
+            n = key - K.Key_0
+            if self.in_split and n in (1, 2):
+                self.prefix_action.emit(f"focus_pane_{n}"); return
+            self.prefix_action.emit(f"goto_{n}"); return
         if key==K.Key_plusminus or event.text()=="±":
             self.prefix_action.emit("focus_notes"); return
         if self._overlay: self._dismiss_overlay(); return
@@ -3618,12 +3624,11 @@ class AIDEWindow(QMainWindow):
         self._secondary_header.setVisible(active)
         if not active:
             return
-        def _label(session):
-            if not session: return "—"
-            title = session.effective_title()
-            return f"  {title}"
-        self._main_header.setText(_label(self._main_terminal.session))
-        self._secondary_header.setText(_label(self._secondary_terminal.session))
+        def _label(session, shortcut):
+            title = session.effective_title() if session else "—"
+            return f"  {shortcut}  {title}"
+        self._main_header.setText(_label(self._main_terminal.session, "⌘1"))
+        self._secondary_header.setText(_label(self._secondary_terminal.session, "⌘2"))
         main_focused = self._focused_pane == "main"
         self._main_header.setStyleSheet(self._HDR_FOCUSED if main_focused else self._HDR_UNFOCUSED)
         self._secondary_header.setStyleSheet(self._HDR_FOCUSED if not main_focused else self._HDR_UNFOCUSED)
@@ -3762,6 +3767,12 @@ class AIDEWindow(QMainWindow):
     # ── actions ────────────────────────────────────────────────────────────────
     def _dispatch_action(self,action:str):
         if action.startswith("goto_"): self.switch_to_index(int(action[5:])-1); return
+        if action == "focus_pane_1":
+            self._focused_pane = "main"; self._main_terminal.setFocus()
+            self._update_split_headers(); return
+        if action == "focus_pane_2":
+            self._focused_pane = "secondary"; self._secondary_terminal.setFocus()
+            self._update_split_headers(); return
         if fn:=getattr(self,f"_action_{action}",None): fn()
 
     def _close_tab_with_confirm(self,tid:int):
