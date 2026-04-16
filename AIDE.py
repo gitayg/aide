@@ -115,7 +115,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.12.4"
+VERSION      = "2.12.5"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -302,6 +302,9 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.12.5": [
+        ("🔗", "Ctrl+click opens URLs", "Hold Ctrl (⌘ on macOS) and click any URL in the terminal to open it in the browser; cursor changes to a pointing hand when hovering a link with Ctrl held"),
+    ],
     "2.12.4": [
         ("𝐁", "Bold terminal title actually works", "Put font-weight in the QLabel stylesheet — Qt CSS beats setFont() + rich-text mode swallows <b>, so only the stylesheet reliably bolds the card title when Claude is waiting"),
     ],
@@ -1642,14 +1645,37 @@ class TerminalWidget(QWidget):
         return (max(0, min(int(pos.x()/self._cw), (self.session.screen.columns if self.session else 80)-1)),
                 max(0, min(int(pos.y()/self._ch), (self.session.screen.lines if self.session else 24)-1)))
 
+    _URL_RE = re.compile(r'https?://[^\s<>\'")\]]+')
+
+    def _url_at(self, col: int, row: int) -> Optional[str]:
+        """Extract the URL surrounding (col, row) on the terminal screen, if any."""
+        if not self.session: return None
+        r = self._get_row(row)
+        if not r: return None
+        cols = self.session.screen.columns
+        line = "".join(
+            (r.get(c) or type("_",(),{"data":" "})()).data
+            if isinstance(r, dict) else r[c].data
+            for c in range(cols)
+        ).rstrip()
+        for m in self._URL_RE.finditer(line):
+            if m.start() <= col <= m.end():
+                return m.group(0).rstrip(".,;:!?")
+        return None
+
     def mousePressEvent(self,event):
         self.setFocus()
         if self._overlay: self._dismiss_overlay(); return
         if event.button()!=Qt.MouseButton.LeftButton or not self.session:
             super().mousePressEvent(event); return
-        # Start a selection at the click position. Crucially, do NOT snap the
-        # view back to the bottom when scrolled — that would lose what the user
-        # is looking at and prevent them from selecting scrollback content.
+        # Ctrl+click (Cmd+click on macOS) → open URL under cursor
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            col, row = self._pos_to_cell(event.position())
+            url = self._url_at(col, row)
+            if url:
+                webbrowser.open(url)
+                return
+        # Start a selection at the click position.
         self._sel_start=self._pos_to_cell(event.position())
         self._sel_end=self._sel_start; self._selecting=True
         self.update()
@@ -1657,6 +1683,14 @@ class TerminalWidget(QWidget):
     def mouseMoveEvent(self, event):
         if self._selecting and self.session:
             self._sel_end=self._pos_to_cell(event.position()); self.update()
+            return
+        # Ctrl held → show pointing hand if hovering a URL
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier and self.session:
+            col, row = self._pos_to_cell(event.position())
+            self.setCursor(Qt.CursorShape.PointingHandCursor if self._url_at(col, row)
+                           else Qt.CursorShape.IBeamCursor)
+        else:
+            self.setCursor(Qt.CursorShape.IBeamCursor)
 
     def mouseReleaseEvent(self, event):
         if not self._selecting: return
