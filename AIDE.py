@@ -115,7 +115,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.13.1"
+VERSION      = "2.13.2"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -302,6 +302,9 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.13.2": [
+        ("⌨", "Ctrl+↑/↓ follows sidebar visual order", "Next/prev-tab navigation (Ctrl+↑/↓ and Ctrl+Tab) now steps through terminals in the exact order displayed in the sidebar, respecting drag-and-drop reordering and group sorting"),
+    ],
     "2.13.1": [
         ("⌨", "Ctrl+↑/↓ navigates the sidebar", "Press Ctrl+Up / Ctrl+Down in any terminal pane to jump to the previous/next terminal in the left sidebar"),
     ],
@@ -4222,17 +4225,23 @@ class AIDEWindow(QMainWindow):
                 QTimer.singleShot(200, lambda t=tid: self._switch_to(t))
                 return
 
+    def _sidebar_ids(self) -> list:
+        """Session IDs in sidebar visual order (matches what the user sees)."""
+        ids = [c.session.tab_id for c in self._tab_bar._cards() if c.session]
+        # Fall back to sessions dict order if tab bar is empty
+        return ids or list(self.sessions.keys())
+
     def _action_next_tab(self):
-        ids=list(self.sessions.keys())
+        ids = self._sidebar_ids()
         if ids:
-            idx=ids.index(self.active_id) if self.active_id in ids else 0
-            self._switch_to(ids[(idx+1)%len(ids)])
+            idx = ids.index(self.active_id) if self.active_id in ids else 0
+            self._switch_to(ids[(idx+1) % len(ids)])
 
     def _action_prev_tab(self):
-        ids=list(self.sessions.keys())
+        ids = self._sidebar_ids()
         if ids:
-            idx=ids.index(self.active_id) if self.active_id in ids else 0
-            self._switch_to(ids[(idx-1)%len(ids)])
+            idx = ids.index(self.active_id) if self.active_id in ids else 0
+            self._switch_to(ids[(idx-1) % len(ids)])
 
     def _action_rename_tab(self):
         self._rename_tab_by_id(self.active_id)
