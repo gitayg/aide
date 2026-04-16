@@ -115,7 +115,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.13.2"
+VERSION      = "2.13.3"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -302,6 +302,9 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.13.3": [
+        ("💬", "Bold waiting title finally works", "Tab card title is now bolded via inline HTML (<b>) rather than relying on Qt stylesheet font-weight, which Qt's HTML renderer silently ignores — works with or without tags"),
+    ],
     "2.13.2": [
         ("⌨", "Ctrl+↑/↓ follows sidebar visual order", "Next/prev-tab navigation (Ctrl+↑/↓ and Ctrl+Tab) now steps through terminals in the exact order displayed in the sidebar, respecting drag-and-drop reordering and group sorting"),
     ],
@@ -1957,8 +1960,13 @@ class TabCard(QFrame):
         if show_tags and s.tags:
             tags_html = "".join(f'<span style="color:{_acc};font-size:10px">[{t}]</span>' for t in s.tags) + " "
         plain = s.effective_title()
-        if tags_html:
-            self._lbl0.setText(f"{tags_html}{plain}")
+        fg_col = C_FG.name() if waiting else C_MUTED.name()
+        if tags_html or waiting:
+            # Use rich-text so we can bold the title inline — stylesheet
+            # font-weight is not reliably applied by Qt's HTML renderer.
+            title_part = (f'<b><span style="color:{fg_col}">{plain}</span></b>'
+                          if waiting else f'<span style="color:{fg_col}">{plain}</span>')
+            self._lbl0.setText(f"{tags_html}{title_part}")
         else:
             self._lbl0.setText(plain)
         # Format last-ping time as relative string
@@ -2018,13 +2026,12 @@ class TabCard(QFrame):
         visible  = getattr(self, "_visible",   False)   # shown in secondary split pane
         waiting  = getattr(self.session, "waiting_input",   False)
         blink_on = getattr(self, "_blink_phase", False)
-        # Title label: bold + bright when waiting for input, dimmed otherwise.
-        # font-weight must live in the stylesheet — setFont(bold) is ignored when
-        # the label has a stylesheet (CSS wins) and again in rich-text mode.
-        fg     = C_FG.name() if waiting else C_MUTED.name()
-        weight = "700" if waiting else "400"
+        # Title label: color + font-weight via stylesheet (plain-text mode).
+        # Rich-text mode (tags or waiting) is bolded via inline HTML in refresh().
+        fg = C_FG.name() if waiting else C_MUTED.name()
         self._lbl0.setStyleSheet(
-            f"QLabel{{color:{fg};font-size:12px;font-weight:{weight};background:transparent;}}")
+            f"QLabel{{color:{fg};font-size:12px;font-weight:{'700' if waiting else '400'};"
+            f"background:transparent;}}")
         # Left accent bar — drawn in paintEvent to avoid QFrame CSS border artifacts
         if self._active or visible:
             self._left_color = C_ACCENT
