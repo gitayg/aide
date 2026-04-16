@@ -115,7 +115,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.10.2"
+VERSION      = "2.10.3"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -3700,6 +3700,10 @@ class AIDEWindow(QMainWindow):
                 self._update_pending=True
                 remote_ver=ev[1]
                 self._hotkey_bar.mark_update_available(True, remote_ver)
+                threading.Thread(target=_macos_notify,
+                    args=(f"Update available: v{remote_ver}",
+                          f"AIDE v{VERSION} → v{remote_ver}. Click ↻ Update to install."),
+                    daemon=True).start()
             elif ev[0]=="git_up_to_date":
                 QMessageBox.information(self,"Check for Updates",
                     f"{APP_NAME} v{VERSION} is up to date.")
