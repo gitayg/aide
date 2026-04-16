@@ -115,7 +115,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.11.1"
+VERSION      = "2.12.0"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -302,6 +302,9 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.12.0": [
+        ("🐙", "Per-terminal GitHub token", "GitHub token selector moved to the right-side Autostart section; each tab picks its own token, injected as GITHUB_TOKEN and GH_TOKEN before the autostart command runs"),
+    ],
     "2.11.0": [
         ("🐙", "GitHub token manager", "Ribbon 🐙 → manage named GitHub PATs; sidebar combo selects which is active; injected as GITHUB_TOKEN and GH_TOKEN in terminals"),
     ],
@@ -542,7 +545,6 @@ class AppConfig:
     shell:          str              = ""
     auto_restart:   bool             = False
     env_overrides:  Dict[str,str]    = field(default_factory=dict)
-    active_github_token: str         = ""    # name of selected token (tokens in vault)
     last_seen_mtime:float            = 0.0   # mtime of AIDE.py at last run
     last_seen_version:str            = ""    # version string at last run, e.g. "2.1.1"
     split_tip_shown:bool             = False  # one-time split-view tip shown
@@ -550,7 +552,6 @@ class AppConfig:
         return {"notif":self.notif.to_dict(),"card":self.card.to_dict(),
                 "shell":self.shell,"auto_restart":self.auto_restart,
                 "env_overrides":self.env_overrides,
-                "active_github_token":self.active_github_token,
                 "last_seen_mtime":self.last_seen_mtime,
                 "last_seen_version":self.last_seen_version,
                 "split_tip_shown":self.split_tip_shown}
@@ -560,7 +561,6 @@ class AppConfig:
                    card=CardConfig.from_dict(d.get("card",{})),
                    shell=d.get("shell",""),auto_restart=d.get("auto_restart",False),
                    env_overrides=d.get("env_overrides",{}),
-                   active_github_token=d.get("active_github_token",""),
                    last_seen_mtime=float(d.get("last_seen_mtime",0.0)),
                    last_seen_version=d.get("last_seen_version",""),
                    split_tip_shown=bool(d.get("split_tip_shown",False)))
@@ -1018,6 +1018,7 @@ class TermSession:
         self.tab_id=tab_id; self.cols=cols; self.rows=rows
         self.custom_title=""; self.notes=""; self.tasks=""; self.tags:list=[]; self.variables:Dict[str,str]={}
         self.autostart_dir:str=""; self.autostart_cmd:str=""
+        self.github_token_name:str=""   # name of the token in vault to inject as GITHUB_TOKEN/GH_TOKEN
         self.browser_url:str=""; self.watching=False
         self.info=TermInfo()
         self.screen=_ScrollScreen(cols,rows)
@@ -1239,6 +1240,7 @@ class TermSession:
         # SecureVault (VAULT_FILE). Only keep them in memory on this object.
         return dict(custom_title=self.custom_title,notes=self.notes,tasks=self.tasks,tags=self.tags,
                     autostart_dir=self.autostart_dir,autostart_cmd=self.autostart_cmd,
+                    github_token_name=self.github_token_name,
                     browser_url=self.browser_url,watching=self.watching,
                     cwd=self.info.cwd_full or self.info.cwd,
                     ssh_host=self.info.ssh_host,last_cmd=self.info.last_cmd)
@@ -1248,6 +1250,7 @@ class TermSession:
         s=cls(tab_id); s.custom_title=d.get("custom_title",""); s.notes=d.get("notes","")
         s.tasks=d.get("tasks",""); s.tags=d.get("tags",[]); s.variables={}  # populated from vault on unlock
         s.autostart_dir=d.get("autostart_dir",""); s.autostart_cmd=d.get("autostart_cmd","")
+        s.github_token_name=d.get("github_token_name","")
         s.browser_url=d.get("browser_url",""); s.watching=d.get("watching",False)
         stored_cwd=d.get("cwd","")
         s.info.cwd_full=stored_cwd
@@ -2107,7 +2110,6 @@ class TabBar(QWidget):
     rename_requested   = pyqtSignal(int)
     close_requested    = pyqtSignal(int)
     tabs_reordered     = pyqtSignal(list)
-    github_token_changed = pyqtSignal(str)  # emits the selected token name
 
     def __init__(self, parent=None):
         super().__init__(parent); self.setFixedWidth(220)
@@ -2140,21 +2142,6 @@ class TabBar(QWidget):
         btn = QPushButton("  +  New Terminal"); btn.setFixedHeight(34)
         btn.setStyleSheet(f"QPushButton{{background:{C_SURFACE.name()};color:{C_MUTED.name()};border:none;font-size:12px;text-align:left;padding-left:12px;}}QPushButton:hover{{background:{C_ACCENT.name()}22;color:{C_ACCENT.name()};}}")
         btn.clicked.connect(self.new_tab_clicked); ml.addWidget(btn)
-        # GitHub token selector
-        self._gh_bar = QWidget(); self._gh_bar.setFixedHeight(28)
-        self._gh_bar.setStyleSheet(f"background:{C_SURFACE.name()};border-top:1px solid #21262d;")
-        gh_lay = QHBoxLayout(self._gh_bar); gh_lay.setContentsMargins(8, 0, 6, 0); gh_lay.setSpacing(4)
-        gh_lbl = QLabel("🐙"); gh_lbl.setStyleSheet(f"color:{C_MUTED.name()};font-size:10px;background:transparent;")
-        self._gh_combo = QComboBox(); self._gh_combo.setFixedHeight(20)
-        self._gh_combo.setStyleSheet(
-            f"QComboBox{{background:{C_PANEL.name()};color:{C_FG.name()};border:1px solid #30363d;"
-            f"border-radius:3px;font-size:10px;padding:0 4px;font-family:'JetBrains Mono',monospace;}}"
-            f"QComboBox::drop-down{{border:none;width:14px;}}"
-            f"QComboBox QAbstractItemView{{background:{C_SURFACE.name()};color:{C_FG.name()};"
-            f"border:1px solid #30363d;selection-background-color:{C_ACCENT.name()}44;}}")
-        self._gh_combo.setCursor(Qt.CursorShape.PointingHandCursor)
-        gh_lay.addWidget(gh_lbl); gh_lay.addWidget(self._gh_combo, 1)
-        ml.addWidget(self._gh_bar)
         # Dashboard footer
         self._dash_footer = QWidget(); self._dash_footer.setFixedHeight(28)
         self._dash_footer.setStyleSheet(f"background:{C_SURFACE.name()};border-top:1px solid #21262d;")
@@ -2176,25 +2163,6 @@ class TabBar(QWidget):
         self._tag_pills: dict = {}
         self._collapsed_groups: set = set()
         self._group_headers: list = []
-
-    def set_github_tokens(self, tokens: Dict[str, str], active: str):
-        """Populate the GitHub token selector combo box."""
-        self._gh_combo.blockSignals(True)
-        self._gh_combo.clear()
-        self._gh_combo.addItem("(none)")
-        for name in sorted(tokens):
-            self._gh_combo.addItem(name)
-        idx = self._gh_combo.findText(active) if active else 0
-        self._gh_combo.setCurrentIndex(max(0, idx))
-        self._gh_combo.blockSignals(False)
-        try: self._gh_combo.currentTextChanged.disconnect()
-        except: pass
-        self._gh_combo.currentTextChanged.connect(self._on_gh_combo_changed)
-        self._gh_bar.setVisible(self._gh_combo.count() > 1)
-
-    def _on_gh_combo_changed(self, text: str):
-        name = "" if text == "(none)" else text
-        self.github_token_changed.emit(name)
 
     def set_dashboard_url(self, url: str):
         self._dash_url.setText(url)
@@ -2748,6 +2716,23 @@ class NotesPanel(QWidget):
         hint=QLabel("Runs on next launch of AIDE for this tab.")
         hint.setStyleSheet(f"color:{C_MUTED.name()};font-size:10px;background:transparent;font-style:italic;")
         hint.setWordWrap(True); al.addWidget(hint)
+
+        # ── GitHub token (per-tab, injected as env before autostart) ──────────
+        gh_lbl_hdr = QLabel("🐙  GitHub token")
+        gh_lbl_hdr.setStyleSheet(f"color:{C_ACCENT.name()};font-weight:bold;font-size:12px;background:transparent;padding-top:10px;")
+        al.addWidget(gh_lbl_hdr)
+        gh_hint = QLabel("Exports GITHUB_TOKEN &amp; GH_TOKEN for this terminal.")
+        gh_hint.setStyleSheet(f"color:{C_MUTED.name()};font-size:10px;background:transparent;")
+        gh_hint.setWordWrap(True); al.addWidget(gh_hint)
+        self._gh_token_combo = QComboBox()
+        self._gh_token_combo.setStyleSheet(
+            f"QComboBox{{background:{C_BG.name()};color:{C_FG.name()};border:1px solid {C_SURFACE.name()};"
+            f"border-radius:3px;font-family:{FONT_FAMILY};font-size:11px;padding:2px 6px;}}"
+            f"QComboBox:focus{{border-color:{C_ACCENT.name()};}}"
+            f"QComboBox::drop-down{{border:none;width:14px;}}"
+            f"QComboBox QAbstractItemView{{background:{C_SURFACE.name()};color:{C_FG.name()};"
+            f"border:1px solid {C_SURFACE.name()};selection-background-color:{C_ACCENT.name()}44;}}")
+        al.addWidget(self._gh_token_combo)
         al.addStretch()
 
         splitter.addWidget(notes_w); splitter.addWidget(tasks_w)
@@ -2827,20 +2812,37 @@ class NotesPanel(QWidget):
             self._numbering=False
 
     def load(self,notes:str,tasks:str="",variables:Optional[Dict[str,str]]=None,
-             autostart_dir:str="",autostart_cmd:str=""):
+             autostart_dir:str="",autostart_cmd:str="",github_token_name:str=""):
         self._notes_edit.setPlainText(notes)
         self._numbering=True
         self._tasks_edit.setPlainText(tasks)
         self._numbering=False
         self._on_tasks_changed()
-        # Only populate variables when the vault is unlocked; otherwise keep
-        # the locked pane visible and hold nothing in the table.
         if self._vault_unlocked:
             self.apply_variables(variables or {})
         else:
             self._vars_table.setRowCount(0)
         self._auto_dir.setText(autostart_dir or "")
         self._auto_cmd.setText(autostart_cmd or "")
+        self._gh_token_combo.blockSignals(True)
+        idx = self._gh_token_combo.findText(github_token_name) if github_token_name else 0
+        self._gh_token_combo.setCurrentIndex(max(0, idx))
+        self._gh_token_combo.blockSignals(False)
+
+    def set_github_token_names(self, names: list, current: str):
+        """Populate the per-tab token selector with available token names."""
+        self._gh_token_combo.blockSignals(True)
+        self._gh_token_combo.clear()
+        self._gh_token_combo.addItem("(none)")
+        for n in sorted(names):
+            self._gh_token_combo.addItem(n)
+        idx = self._gh_token_combo.findText(current) if current else 0
+        self._gh_token_combo.setCurrentIndex(max(0, idx))
+        self._gh_token_combo.blockSignals(False)
+
+    def get_github_token_name(self) -> str:
+        t = self._gh_token_combo.currentText()
+        return "" if t == "(none)" else t
 
     def get_notes(self)->str: return self._notes_edit.toPlainText()
     def get_tasks(self)->str: return self._tasks_edit.toPlainText()
@@ -3529,7 +3531,6 @@ class AIDEWindow(QMainWindow):
         self._tab_bar.rename_requested.connect(self._rename_tab_by_id)
         self._tab_bar.close_requested.connect(self._close_tab_with_confirm)
         self._tab_bar.tabs_reordered.connect(self._on_tabs_reordered)
-        self._tab_bar.github_token_changed.connect(self._on_github_token_changed)
         ml.addWidget(self._tab_bar)
         term_area=QWidget(); term_area.setStyleSheet(f"background:{C_BG.name()};")
         tv=QVBoxLayout(term_area); tv.setContentsMargins(0,0,0,0); tv.setSpacing(0)
@@ -3596,10 +3597,11 @@ class AIDEWindow(QMainWindow):
 
     # ── tab lifecycle ──────────────────────────────────────────────────────────
     def _env_with_vars(self, session: "TermSession") -> dict:
-        """Merge config env_overrides, active GitHub token, and vault variables."""
+        """Merge config env_overrides, this session's GitHub token, and vault variables."""
         env = dict(self.config.env_overrides)
-        # Inject the active GitHub token from the vault
-        name = self.config.active_github_token
+        # Inject this tab's GitHub token (env is set before autostart runs,
+        # since autostart is sent as shell input after execvpe with env).
+        name = getattr(session, "github_token_name", "")
         if name and self._vault.is_unlocked():
             token = self._vault.get_github_tokens().get(name, "")
             if token:
@@ -3638,6 +3640,7 @@ class AIDEWindow(QMainWindow):
             self.sessions[self.active_id].tasks=self._notes_panel.get_tasks()
             self.sessions[self.active_id].autostart_dir=self._notes_panel.get_autostart_dir()
             self.sessions[self.active_id].autostart_cmd=self._notes_panel.get_autostart_cmd()
+            self.sessions[self.active_id].github_token_name=self._notes_panel.get_github_token_name()
             v=self._notes_panel.get_variables()
             if v is not None:
                 self.sessions[self.active_id].variables=v
@@ -3656,7 +3659,9 @@ class AIDEWindow(QMainWindow):
         w=self._main_terminal.width(); h=self._main_terminal.height()
         if w>0 and h>0:
             s.resize(max(1,w//self._main_terminal._cw),max(1,h//self._main_terminal._ch))
-        self._notes_panel.load(s.notes,s.tasks,s.variables,s.autostart_dir,s.autostart_cmd)
+        token_names = list(self._vault.get_github_tokens().keys()) if self._vault.is_unlocked() else []
+        self._notes_panel.set_github_token_names(token_names, s.github_token_name)
+        self._notes_panel.load(s.notes,s.tasks,s.variables,s.autostart_dir,s.autostart_cmd,s.github_token_name)
         self._tab_bar.set_active(tid, self._secondary_id if self._split_mode=="terminal" else -1)
         self._main_terminal.update(); self._update_status()
         # Show the previous-session screenshot overlay only on the first
@@ -4188,14 +4193,15 @@ class AIDEWindow(QMainWindow):
             if new_tokens is not None:
                 self._vault.set_github_tokens(new_tokens)
                 self._vault.flush()
-                if self.config.active_github_token not in new_tokens:
-                    self.config.active_github_token = ""
-                    self.config.save()
-                self._tab_bar.set_github_tokens(new_tokens, self.config.active_github_token)
-
-    def _on_github_token_changed(self, name: str):
-        self.config.active_github_token = name
-        self.config.save()
+                # Clear per-tab selections that reference removed tokens
+                for s in self.sessions.values():
+                    if s.github_token_name and s.github_token_name not in new_tokens:
+                        s.github_token_name = ""
+                # Refresh the notes-panel selector for the active tab
+                if self.active_id in self.sessions:
+                    self._notes_panel.set_github_token_names(
+                        list(new_tokens.keys()),
+                        self.sessions[self.active_id].github_token_name)
 
     def _action_configure_notifs(self):
         dlg=NotifConfigDialog(self.config.notif,self.config.auto_restart,self)
@@ -4277,12 +4283,12 @@ class AIDEWindow(QMainWindow):
             s.variables=self._vault.get_vars(tid)
             self._inject_vars_into_shell(s)
         self._notes_panel.set_vault_unlocked(True)
-        # Refresh current tab's table
+        # Refresh current tab's table + GitHub token selector
         if self.active_id>=0 and self.active_id in self.sessions:
             self._notes_panel.apply_variables(self.sessions[self.active_id].variables)
-        # Refresh GitHub token selector from the vault
-        self._tab_bar.set_github_tokens(
-            self._vault.get_github_tokens(), self.config.active_github_token)
+            self._notes_panel.set_github_token_names(
+                list(self._vault.get_github_tokens().keys()),
+                self.sessions[self.active_id].github_token_name)
 
     def _inject_vars_into_shell(self, s: "TermSession"):
         """Silently export vault variables into an already-running shell.
@@ -4317,7 +4323,7 @@ class AIDEWindow(QMainWindow):
         for s in self.sessions.values(): s.variables={}
         self._vault.lock()
         self._notes_panel.set_vault_unlocked(False)
-        self._tab_bar.set_github_tokens({}, "")
+        self._notes_panel.set_github_token_names([], "")
 
     # ── persistence ────────────────────────────────────────────────────────────
     def _save_session(self):
@@ -4326,6 +4332,7 @@ class AIDEWindow(QMainWindow):
             self.sessions[self.active_id].tasks=self._notes_panel.get_tasks()
             self.sessions[self.active_id].autostart_dir=self._notes_panel.get_autostart_dir()
             self.sessions[self.active_id].autostart_cmd=self._notes_panel.get_autostart_cmd()
+            self.sessions[self.active_id].github_token_name=self._notes_panel.get_github_token_name()
             v=self._notes_panel.get_variables()
             if v is not None:
                 self.sessions[self.active_id].variables=v
