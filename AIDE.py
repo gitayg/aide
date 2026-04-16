@@ -115,7 +115,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.12.1"
+VERSION      = "2.12.2"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -302,6 +302,9 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.12.2": [
+        ("🐙", "GitHub token exported before autostart", "Token is silently exported into the shell before the autostart command runs, so claude and other autostart tools see GITHUB_TOKEN set; changing the token in the panel re-exports into the live shell"),
+    ],
     "2.12.1": [
         ("💬", "Status in split headers & cards", "Split pane header now shows spinner while Claude works and 💬 while waiting, with a highlighted style when waiting; tab card icon slot also shows 💬 for waiting"),
     ],
@@ -2601,6 +2604,7 @@ class _ColoredTextEdit(QTextEdit):
 class NotesPanel(QWidget):
     vault_unlock_requested = pyqtSignal()
     vault_lock_requested   = pyqtSignal()
+    github_token_changed   = pyqtSignal(str)   # emits new token name ("" = none)
 
     def __init__(self,parent=None):
         super().__init__(parent); self.setMinimumWidth(180); self.resize(240,self.height())
@@ -2742,6 +2746,8 @@ class NotesPanel(QWidget):
             f"QComboBox::drop-down{{border:none;width:14px;}}"
             f"QComboBox QAbstractItemView{{background:{C_SURFACE.name()};color:{C_FG.name()};"
             f"border:1px solid {C_SURFACE.name()};selection-background-color:{C_ACCENT.name()}44;}}")
+        self._gh_token_combo.currentTextChanged.connect(
+            lambda t: self.github_token_changed.emit("" if t == "(none)" else t))
         al.addWidget(self._gh_token_combo)
         al.addStretch()
 
@@ -3591,6 +3597,7 @@ class AIDEWindow(QMainWindow):
         self._notes_panel=NotesPanel()
         self._notes_panel.vault_unlock_requested.connect(self._on_vault_unlock_requested)
         self._notes_panel.vault_lock_requested.connect(self._on_vault_lock_requested)
+        self._notes_panel.github_token_changed.connect(self._on_gh_token_selected)
         self._main_splitter=QSplitter(Qt.Orientation.Horizontal)
         self._main_splitter.setHandleWidth(3)
         self._main_splitter.setStyleSheet(f"QSplitter::handle{{background:{C_SURFACE.name()};}}")
@@ -4214,6 +4221,21 @@ class AIDEWindow(QMainWindow):
                 self.config.shell=r["shell"]; self.config.env_overrides=r["env_overrides"]
                 self.config.save(); self._info_bar._refresh()
 
+    def _on_gh_token_selected(self, name: str):
+        """User picked a new token in the notes panel — persist + re-export into live shell."""
+        if self.active_id < 0 or self.active_id not in self.sessions: return
+        s = self.sessions[self.active_id]
+        if s.github_token_name == name: return
+        s.github_token_name = name
+        if s.alive:
+            exports = self._gh_token_exports(s)
+            # If the user cleared the selection, unset the vars instead.
+            if not exports and self._vault.is_unlocked():
+                exports = "unset GITHUB_TOKEN GH_TOKEN; "
+            if exports:
+                try: s.write(f"\nstty -echo; {exports} stty echo\n".encode())
+                except Exception: pass
+
     def _action_github_tokens(self):
         if not self._vault.is_unlocked():
             self._on_vault_unlock_requested()
@@ -4322,16 +4344,25 @@ class AIDEWindow(QMainWindow):
                 list(self._vault.get_github_tokens().keys()),
                 self.sessions[self.active_id].github_token_name)
 
+    def _gh_token_exports(self, s: "TermSession") -> str:
+        """Return `export GITHUB_TOKEN=…; export GH_TOKEN=…; ` for this session, or ''."""
+        name = getattr(s, "github_token_name", "")
+        if not name or not self._vault.is_unlocked(): return ""
+        tok = self._vault.get_github_tokens().get(name, "")
+        if not tok: return ""
+        return f"export GITHUB_TOKEN={tok!r}; export GH_TOKEN={tok!r}; "
+
     def _inject_vars_into_shell(self, s: "TermSession"):
         """Silently export vault variables into an already-running shell.
 
         Uses stty -echo so the export commands don't appear in the terminal
         display and therefore aren't visible to any AI reading the screen.
         """
-        if not s.alive or not s.variables: return
+        if not s.alive: return
         exports = "".join(
             f"export {k}={v!r};" for k, v in s.variables.items() if k.isidentifier()
         )
+        exports += self._gh_token_exports(s)
         if not exports: return
         # Suppress echo → run exports → restore echo, all in one write
         payload = f"\nstty -echo; {exports} stty echo\n"
@@ -4427,6 +4458,11 @@ class AIDEWindow(QMainWindow):
                 d  =(sess.autostart_dir or "").strip()
                 if not cmd and not d: continue
                 payload=b""
+                # Silent GitHub-token export runs BEFORE the autostart command
+                # so claude (or whatever autostart is) sees $GITHUB_TOKEN set.
+                gh_exports = self._gh_token_exports(sess)
+                if gh_exports:
+                    payload += f"stty -echo; {gh_exports} stty echo\n".encode("utf-8")
                 if d:   payload += f"cd {shlex.quote(d)}\n".encode("utf-8")
                 if cmd: payload += f"{cmd}\n".encode("utf-8")
                 if not payload: continue
