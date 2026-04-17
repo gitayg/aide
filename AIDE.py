@@ -115,7 +115,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.14.0"
+VERSION      = "2.14.1"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -302,6 +302,9 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.14.1": [
+        ("🤖", "Improved agent working detection", "Spinner and done signals are now evaluated independently — a chunk containing both a braille spinner and the ╰─ response border correctly ends the working state instead of getting stuck; ╭─ opening border transitions thinking→working immediately; spinner regex is tighter to skip stray ANSI sequences"),
+    ],
     "2.14.0": [
         ("↔", "Resizable sidebar", "Drag the handle between the sidebar and the terminal area to resize the left panel to your preferred width"),
         ("⊞", "Up to 6 split panels", "Shift+click up to 6 times to open a 3-row 2×3 grid; Cmd+1–6 focus each pane; each extra pane header has an × close button"),
@@ -1043,15 +1046,17 @@ class TermSession:
     ]
     # Claude CLI exclusively uses braille block spinner characters (U+2800 range).
     # Virtually no other tool uses these, making them a near-zero false-positive signal.
-    # _THINKING_RE: braille char followed by "Thinking" on the same line.
-    # _WORKING_RE:  any braille char at all → Claude is active (tool use, writing, etc.)
+    # _THINKING_RE: braille char + optional ANSI + "Thinking" on the same line.
+    # _WORKING_RE:  braille char + space/ANSI + non-whitespace word (tool name / status text).
+    #               Tighter than "any braille char" to avoid false hits from stray unicode.
     # _DONE_RE:     Claude wraps responses in a ╭─…╰─ box; the closing ╰─ means done.
+    # _START_RE:    Opening ╭─ of the response box — Claude started writing (thinking→working).
     _SPINNER_CHARS = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
-    _THINKING_RE = re.compile(rf'[{_SPINNER_CHARS}][^\n]*[Tt]hinking')
-    _WORKING_RE  = re.compile(rf'[{_SPINNER_CHARS}]')
+    _THINKING_RE = re.compile(rf'[{_SPINNER_CHARS}](?:\x1b\[[0-9;]*m)*\s*[Tt]hinking')
+    _WORKING_RE  = re.compile(rf'[{_SPINNER_CHARS}](?:\x1b\[[0-9;]*m|\s)*\S')
     _DONE_RE     = re.compile(r'╰[─━]')
+    _START_RE    = re.compile(r'╭[─━]')
     # Safety-net decay: clear flags if no spinner arrives for this many seconds.
-    # Longer than before to survive gaps during long tool executions.
     _AI_IDLE_SECS = 10.0
     _URL_RE   = re.compile(r"https?://(?:localhost|127\.0\.0\.1):(\d+\S*)")
     _TAIL_LEN = 3000
@@ -1135,15 +1140,21 @@ class TermSession:
         # This prevents malicious terminal output from injecting shell metacharacters.
         if m:=re.search(r"claude --resume ([a-zA-Z0-9_-]+)",text):
             self.claude_resume_cmd=f"claude --resume {m.group(1)}"
+        # Evaluate spinner and done independently so that a chunk containing both
+        # (last spinner frame + closing ╰─ border) correctly ends the working state.
+        _had_spinner = False
         if self._THINKING_RE.search(text):
             self.claude_thinking=True; self.claude_working=False
-            self._ai_active_time=time.time()
+            self._ai_active_time=time.time(); _had_spinner=True
         elif self._WORKING_RE.search(text):
             self.claude_working=True; self.claude_thinking=False
+            self._ai_active_time=time.time(); _had_spinner=True
+        # ╭─ box opening: Claude started writing its response (transition thinking→working)
+        if not _had_spinner and self._START_RE.search(text) and self.claude_thinking:
+            self.claude_thinking=False; self.claude_working=True
             self._ai_active_time=time.time()
-        # Immediate done: Claude's response closing border ╰─ means it finished.
-        # Reset flags right away instead of waiting for the decay timer.
-        elif self._DONE_RE.search(text) and (self.claude_working or self.claude_thinking):
+        # ╰─ box closing: done — checked separately so it overrides spinner in same chunk
+        if self._DONE_RE.search(text):
             self.claude_working=False; self.claude_thinking=False
         if self._sf: self.stream.feed(text)
         else:        self.stream.feed(data)
