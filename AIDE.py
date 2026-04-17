@@ -115,7 +115,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.13.3"
+VERSION      = "2.13.4"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -302,6 +302,9 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.13.4": [
+        ("💬", "Waiting indicator visible in sidebar", "Cards where Claude is waiting now show a blue accent bar + blue-tinted background — same visual as an active card but distinct, so waiting terminals stand out in the list even when not focused"),
+    ],
     "2.13.3": [
         ("💬", "Bold waiting title finally works", "Tab card title is now bolded via inline HTML (<b>) rather than relying on Qt stylesheet font-weight, which Qt's HTML renderer silently ignores — works with or without tags"),
     ],
@@ -2033,7 +2036,9 @@ class TabCard(QFrame):
             f"QLabel{{color:{fg};font-size:12px;font-weight:{'700' if waiting else '400'};"
             f"background:transparent;}}")
         # Left accent bar — drawn in paintEvent to avoid QFrame CSS border artifacts
-        if self._active or visible:
+        if waiting:
+            self._left_color = C_ACCENT          # blue bar for any waiting card
+        elif self._active or visible:
             self._left_color = C_ACCENT
         elif self._unread:
             self._left_color = QColor("#e05c00")
@@ -2041,8 +2046,15 @@ class TabCard(QFrame):
             self._left_color = C_MUTED
         else:
             self._left_color = QColor("transparent")
-        bg    = "#1f2d3d" if self._active else C_SURFACE.name() if (visible or kbd) else C_PANEL.name()
-        hover = "" if (self._active or visible or kbd) else f"QFrame:hover{{background:{C_SURFACE.name()};}}"
+        if waiting and not self._active:
+            bg = "#1a2533"                        # blue-tinted bg when waiting but not focused
+        elif self._active:
+            bg = "#1f2d3d"
+        elif visible or kbd:
+            bg = C_SURFACE.name()
+        else:
+            bg = C_PANEL.name()
+        hover = "" if (self._active or visible or kbd or waiting) else f"QFrame:hover{{background:{C_SURFACE.name()};}}"
         self.setStyleSheet(f"QFrame{{background:{bg};border:none;}}{hover}")
         self.update()
 
