@@ -115,7 +115,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.14.2"
+VERSION      = "2.14.3"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -302,6 +302,9 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.14.3": [
+        ("⌨", "Ctrl+↑/↓ cycles panes when in split mode", "While any split pane is focused, Ctrl+Up/Down moves focus between panes only — sidebar navigation resumes when back to a single terminal"),
+    ],
     "2.14.2": [
         ("⊞", "6-panel grid is now 3×2", "Split panels fill left-to-right then top-to-bottom: panes 1–3 across the top row, panes 4–6 across the bottom row"),
     ],
@@ -4325,12 +4328,20 @@ class AIDEWindow(QMainWindow):
         return ids or list(self.sessions.keys())
 
     def _action_next_tab(self):
+        if self._num_panes > 1:
+            nxt = (self._focused_pane + 1) % self._num_panes
+            self._set_focused_pane(nxt); self._terminals[nxt].setFocus()
+            self._update_split_headers(); return
         ids = self._sidebar_ids()
         if ids:
             idx = ids.index(self.active_id) if self.active_id in ids else 0
             self._switch_to(ids[(idx+1) % len(ids)])
 
     def _action_prev_tab(self):
+        if self._num_panes > 1:
+            prv = (self._focused_pane - 1) % self._num_panes
+            self._set_focused_pane(prv); self._terminals[prv].setFocus()
+            self._update_split_headers(); return
         ids = self._sidebar_ids()
         if ids:
             idx = ids.index(self.active_id) if self.active_id in ids else 0
