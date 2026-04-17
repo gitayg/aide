@@ -115,7 +115,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.13.4"
+VERSION      = "2.13.5"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -302,6 +302,9 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.13.5": [
+        ("🎨", "Paste image as ASCII art", "Right-click in any terminal → 'Paste image as ASCII art' converts a clipboard screenshot to ASCII characters and pastes the result as text"),
+    ],
     "2.13.4": [
         ("💬", "Waiting indicator visible in sidebar", "Cards where Claude is waiting now show a blue accent bar + blue-tinted background — same visual as an active card but distinct, so waiting terminals stand out in the list even when not focused"),
     ],
@@ -1735,6 +1738,38 @@ class TerminalWidget(QWidget):
         self.update()
 
     @staticmethod
+    @staticmethod
+    def _image_to_ascii(img, width: int = 160) -> str:
+        """Convert a QImage to an ASCII-art string.
+
+        Characters are roughly 2× taller than wide, so the rendered height is
+        halved to maintain the original image aspect ratio.
+        """
+        # Palette: 10 characters ordered light→dark (space = brightest)
+        _CHARS = " .:-=+*#%@"
+        if img.isNull():
+            return ""
+        # Scale to target width; account for character aspect ratio (~1:2 w:h)
+        src_w = img.width(); src_h = img.height()
+        if src_w == 0 or src_h == 0:
+            return ""
+        height = max(1, int(width * src_h / src_w * 0.45))
+        scaled = img.scaled(width, height)
+        lines = []
+        for row in range(scaled.height()):
+            row_chars = []
+            for col in range(scaled.width()):
+                px = scaled.pixel(col, row)
+                r = (px >> 16) & 0xFF
+                g = (px >> 8)  & 0xFF
+                b =  px        & 0xFF
+                brightness = int(0.299*r + 0.587*g + 0.114*b)  # luminance
+                idx = int(brightness / 255 * (len(_CHARS) - 1))
+                row_chars.append(_CHARS[idx])
+            lines.append("".join(row_chars))
+        return "\n".join(lines)
+
+    @staticmethod
     def _clipboard_image_path() -> Optional[str]:
         """If clipboard holds image data, save to a temp PNG and return its path."""
         cb = QApplication.clipboard()
@@ -1788,6 +1823,8 @@ class TerminalWidget(QWidget):
         file_act.setEnabled(has_files)
         img_act    = menu.addAction("🖼  Paste image as file path")
         img_act.setEnabled(has_image)
+        ascii_act  = menu.addAction("🎨  Paste image as ASCII art")
+        ascii_act.setEnabled(has_image)
         menu.addSeparator()
         copy_act   = menu.addAction("Copy screen")
         act=menu.exec(event.globalPos())
@@ -1810,6 +1847,11 @@ class TerminalWidget(QWidget):
             if path and self.session:
                 self.session.scroll_offset=0
                 self.session.write(shlex.quote(path).encode("utf-8"))
+        elif act==ascii_act:
+            art = self._image_to_ascii(cb.image())
+            if art and self.session:
+                self.session.scroll_offset=0
+                self.session.write(art.encode("utf-8"))
         elif act==copy_act:
             if self.session: QApplication.clipboard().setText(self.session.screen_text())
 
