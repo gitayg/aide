@@ -115,7 +115,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.13.6"
+VERSION      = "2.14.0"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -302,6 +302,12 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.14.0": [
+        ("↔", "Resizable sidebar", "Drag the handle between the sidebar and the terminal area to resize the left panel to your preferred width"),
+        ("⊞", "Up to 6 split panels", "Shift+click up to 6 times to open a 3-row 2×3 grid; Cmd+1–6 focus each pane; each extra pane header has an × close button"),
+        ("🏷", "Sidebar sort by tag or recent question", "Click A-Z to sort terminals alphabetically by tag; click ⏱ to sort by when Claude last asked you a question — click again to restore insertion order"),
+        ("🧹", "Groups removed from sidebar", "Terminals are no longer grouped under collapsible headers — tags still filter the list via the pill buttons in the filter bar"),
+    ],
     "2.13.6": [
         ("🧹", "Cleaner info bar in single-pane mode", "Terminal name is no longer shown in the top info bar when only one pane is open — the sidebar already identifies it"),
     ],
@@ -1063,7 +1069,7 @@ class TermSession:
         self.master_fd=-1; self.pid=-1; self.alive=False; self.dirty=False
         self.last_out_time=0.0; self._notif_armed=False
         self._input_buf=bytearray(); self._output_tail=""
-        self.waiting_input=False; self.scroll_offset=0; self.last_ping_time:float=0.0
+        self.waiting_input=False; self.scroll_offset=0; self.last_ping_time:float=0.0; self.last_waiting_at:float=0.0
         self.claude_resume_cmd:str=""; self.claude_working:bool=False; self.claude_thinking:bool=False
         self._ai_active_time:float=0.0   # last time working/thinking was detected
         self._thread:Optional[threading.Thread]=None
@@ -1148,7 +1154,7 @@ class TermSession:
         for pat,msg in self._AI_PATS:
             if pat.search(text):
                 self.waiting_input=True; self.claude_working=False; self.claude_thinking=False
-                self.last_ping_time=time.time()
+                self.last_ping_time=time.time(); self.last_waiting_at=self.last_ping_time
                 if not was_waiting:
                     _EVENT_Q.put(("blink",self.tab_id,msg))
                     # Fire a notification on every fresh "waiting" event,
@@ -1611,7 +1617,7 @@ class TerminalWidget(QWidget):
             self.prefix_action.emit("next_tab"); return
         if ctrl and not shift and K.Key_1<=key<=K.Key_9:
             n = key - K.Key_0
-            if self.in_split and 1 <= n <= 4:
+            if self.in_split and 1 <= n <= 6:
                 self.prefix_action.emit(f"focus_pane_{n}"); return
             self.prefix_action.emit(f"goto_{n}"); return
         if key==K.Key_plusminus or event.text()=="±":
@@ -2203,36 +2209,6 @@ class TabCard(QFrame):
 
 
 
-class _GroupHeader(QWidget):
-    """Collapsible section header for a tag group in the tree sidebar."""
-    toggled = pyqtSignal(str)  # emits the tag key on click
-
-    def __init__(self, tag: str, collapsed: bool, parent=None):
-        super().__init__(parent)
-        self.tag = tag
-        self.setFixedHeight(24)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setStyleSheet(f"background:{C_SURFACE.name()};border-bottom:1px solid #21262d;")
-        lay = QHBoxLayout(self); lay.setContentsMargins(8, 0, 8, 0); lay.setSpacing(5)
-        self._chev = QLabel(); self._chev.setStyleSheet(f"color:{C_MUTED.name()};font-size:9px;background:transparent;")
-        lay.addWidget(self._chev)
-        label = f"[{tag}]" if tag else "Untagged"
-        lbl = QLabel(label)
-        lbl.setStyleSheet(
-            f"color:{C_ACCENT.name() if tag else C_MUTED.name()};"
-            f"font-size:10px;font-weight:700;background:transparent;"
-            f"letter-spacing:.04em;font-family:'JetBrains Mono',monospace;")
-        lay.addWidget(lbl, 1)
-        self._set_chev(collapsed)
-
-    def _set_chev(self, collapsed: bool):
-        self._chev.setText("▶" if collapsed else "▼")
-
-    def mousePressEvent(self, e):
-        if e.button() == Qt.MouseButton.LeftButton:
-            self.toggled.emit(self.tag)
-        super().mousePressEvent(e)
-
 
 class TabBar(QWidget):
     tab_selected       = pyqtSignal(int)
@@ -2242,20 +2218,31 @@ class TabBar(QWidget):
     close_requested    = pyqtSignal(int)
     tabs_reordered     = pyqtSignal(list)
 
+    # sort modes: "tag" = alphabetical by first tag, "recent" = last waiting_at desc
+    SORT_TAG    = "tag"
+    SORT_RECENT = "recent"
+
     def __init__(self, parent=None):
-        super().__init__(parent); self.setFixedWidth(220)
+        super().__init__(parent)
+        self.setMinimumWidth(140)
         self.setStyleSheet(f"background:{C_PANEL.name()};")
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         ml = QVBoxLayout(self); ml.setContentsMargins(0,0,0,0); ml.setSpacing(0)
         self._scroll = QScrollArea(); self._scroll.setWidgetResizable(True)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._scroll.setStyleSheet("QScrollArea{border:none;}QScrollBar:vertical{width:4px;}QScrollBar::handle:vertical{background:#444;border-radius:2px;}")
-        # Unread filter bar
+        # Filter + sort bar
         self._filter_bar = QWidget(); self._filter_bar.setFixedHeight(26)
         self._filter_bar.setStyleSheet(f"background:{C_SURFACE.name()};")
-        fb_lay = QHBoxLayout(self._filter_bar); fb_lay.setContentsMargins(6,0,6,0); fb_lay.setSpacing(0)
+        fb_lay = QHBoxLayout(self._filter_bar); fb_lay.setContentsMargins(6,0,4,0); fb_lay.setSpacing(0)
         self._unread_filter_btn = QPushButton("● Unread"); self._unread_filter_btn.setCheckable(True)
         self._unread_filter_btn.setFixedHeight(20)
+        _pill_css = (
+            f"QPushButton{{background:transparent;color:{C_MUTED.name()};border:1px solid transparent;"
+            f"border-radius:3px;font-size:10px;padding:0 5px;}}"
+            f"QPushButton:hover{{color:{C_FG.name()};}}"
+            f"QPushButton:checked{{background:{C_ACCENT.name()}33;color:{C_ACCENT.name()};border-color:{C_ACCENT.name()};}}"
+        )
         self._unread_filter_btn.setStyleSheet(
             f"QPushButton{{background:transparent;color:{C_MUTED.name()};border:1px solid transparent;"
             f"border-radius:3px;font-size:10px;padding:0 6px;}}"
@@ -2264,10 +2251,23 @@ class TabBar(QWidget):
         )
         self._unread_filter_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._unread_filter_btn.toggled.connect(self._on_unread_filter_toggled)
-        fb_lay.addWidget(self._unread_filter_btn); fb_lay.addStretch()
+        fb_lay.addWidget(self._unread_filter_btn)
+        fb_lay.addStretch()
+        # Sort buttons
+        self._sort_tag_btn = QPushButton("A-Z"); self._sort_tag_btn.setCheckable(True)
+        self._sort_tag_btn.setFixedHeight(20); self._sort_tag_btn.setStyleSheet(_pill_css)
+        self._sort_tag_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._sort_tag_btn.setToolTip("Sort by tag name")
+        self._sort_tag_btn.clicked.connect(lambda: self._set_sort(self.SORT_TAG))
+        self._sort_recent_btn = QPushButton("⏱"); self._sort_recent_btn.setCheckable(True)
+        self._sort_recent_btn.setFixedHeight(20); self._sort_recent_btn.setStyleSheet(_pill_css)
+        self._sort_recent_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._sort_recent_btn.setToolTip("Sort by last question from Claude")
+        self._sort_recent_btn.clicked.connect(lambda: self._set_sort(self.SORT_RECENT))
+        fb_lay.addWidget(self._sort_tag_btn); fb_lay.addWidget(self._sort_recent_btn)
         ml.addWidget(self._filter_bar)
         self._cw = QWidget(); self._cw.setStyleSheet(f"background:{C_PANEL.name()};")
-        self._cw.setAcceptDrops(True)   # required so Qt hit-tests children during drag
+        self._cw.setAcceptDrops(True)
         self._cl = QVBoxLayout(self._cw); self._cl.setContentsMargins(0,0,0,0); self._cl.setSpacing(0); self._cl.addStretch()
         self._scroll.setWidget(self._cw); ml.addWidget(self._scroll, 1)
         btn = QPushButton("  +  New Terminal"); btn.setFixedHeight(34)
@@ -2292,8 +2292,7 @@ class TabBar(QWidget):
         self._unread_filter: bool = False
         self._tag_filter: str = ""
         self._tag_pills: dict = {}
-        self._collapsed_groups: set = set()
-        self._group_headers: list = []
+        self._sort_mode: str = ""  # "" = insertion order, SORT_TAG, SORT_RECENT
 
     def set_dashboard_url(self, url: str):
         self._dash_url.setText(url)
@@ -2331,7 +2330,9 @@ class TabBar(QWidget):
                 btn.setChecked(tag == self._tag_filter)
                 btn.clicked.connect(lambda checked, t=tag: self._on_tag_pill_clicked(t))
                 fb_lay = self._filter_bar.layout()
-                fb_lay.insertWidget(fb_lay.count() - 1, btn)
+                # Insert tag pills after the Unread button (index 0), before the stretch
+                insert_pos = 1 + sum(1 for t2 in sorted(all_tags) if t2 < tag and t2 in self._tag_pills)
+                fb_lay.insertWidget(insert_pos, btn)
                 self._tag_pills[tag] = btn
 
     def _on_tag_pill_clicked(self, tag: str):
@@ -2343,68 +2344,45 @@ class TabBar(QWidget):
             btn.setChecked(t == self._tag_filter)
         self.rebuild_layout(self._sessions)
 
+    def _set_sort(self, mode: str):
+        if self._sort_mode == mode:
+            mode = ""
+        self._sort_mode = mode
+        self._sort_tag_btn.setChecked(mode == self.SORT_TAG)
+        self._sort_recent_btn.setChecked(mode == self.SORT_RECENT)
+        self.rebuild_layout(self._sessions)
+
     def rebuild_layout(self, sessions: dict):
         self._sessions = sessions
         self.update_tag_pills()
 
-        # Remove old group headers and detach cards (keep card objects alive)
+        # Detach all cards from layout (keep alive)
         while self._cl.count() > 1:
             item = self._cl.takeAt(0)
             w = item.widget()
-            if w and not isinstance(w, TabCard):
-                w.deleteLater()
-            elif w:
+            if w:
                 w.setParent(None)
-        self._group_headers.clear()
 
-        # Build ordered groups: sorted tag names, then "" (Untagged) last
-        groups: dict = {}   # tag -> [tid]  (each session in its FIRST tag only)
-        for tid, s in self._sessions.items():
+        # Determine display order
+        tids = list(self._sessions.keys())
+        if self._sort_mode == self.SORT_TAG:
+            def _tag_key(tid):
+                tags = getattr(self._sessions[tid], 'tags', [])
+                return (tags[0].lower() if tags else "\xff", tid)
+            tids.sort(key=_tag_key)
+        elif self._sort_mode == self.SORT_RECENT:
+            tids.sort(key=lambda tid: getattr(self._sessions[tid], 'last_waiting_at', 0.0), reverse=True)
+
+        for tid in tids:
+            card = self._card_map.get(tid)
+            if not card: continue
+            s = self._sessions[tid]
             tags = getattr(s, 'tags', [])
-            key = tags[0] if tags else ""
-            groups.setdefault(key, []).append(tid)
-
-        sorted_keys = sorted(k for k in groups if k) + ([""] if "" in groups else [])
-
-        for key in sorted_keys:
-            tids = groups[key]
-            # Apply filters
-            visible_tids = []
-            for tid in tids:
-                card = self._card_map.get(tid)
-                if not card: continue
-                if self._unread_filter and not card._unread: continue
-                if self._tag_filter and key != self._tag_filter: continue
-                visible_tids.append(tid)
-            all_tids = tids  # all tids for this group (for hidden cards too)
-
-            # Skip group entirely when filter hides all
-            if (self._unread_filter or self._tag_filter) and not visible_tids:
-                for tid in tids:
-                    if card := self._card_map.get(tid):
-                        card.setVisible(False)
-                        self._cl.insertWidget(self._cl.count()-1, card)
-                continue
-
-            collapsed = key in self._collapsed_groups
-            hdr = _GroupHeader(key, collapsed)
-            hdr.toggled.connect(self._toggle_group)
-            self._cl.insertWidget(self._cl.count()-1, hdr)
-            self._group_headers.append(hdr)
-
-            for tid in tids:
-                card = self._card_map.get(tid)
-                if not card: continue
-                in_visible = tid in visible_tids
-                self._cl.insertWidget(self._cl.count()-1, card)
-                card.setVisible(in_visible and not collapsed)
-
-    def _toggle_group(self, tag: str):
-        if tag in self._collapsed_groups:
-            self._collapsed_groups.discard(tag)
-        else:
-            self._collapsed_groups.add(tag)
-        self.rebuild_layout(self._sessions)
+            tag_key = tags[0] if tags else ""
+            passes_tag = not self._tag_filter or tag_key == self._tag_filter
+            passes_unread = not self._unread_filter or card._unread
+            self._cl.insertWidget(self._cl.count()-1, card)
+            card.setVisible(passes_tag and passes_unread)
 
     # ── card management ────────────────────────────────────────────────────────
     def add_card(self, s: TermSession, cfg: CardConfig) -> "TabCard":
@@ -3597,9 +3575,9 @@ class AIDEWindow(QMainWindow):
         self._next_id=0; self.active_id=-1
         self._split_mode="none"; self._secondary_id=-1
         self._split_picking=False
-        self._focused_pane=0       # int index 0-3 — which pane last had keyboard focus
-        self._num_panes=1          # number of visible panes (1-4)
-        self._pane_ids=[-1,-1,-1,-1]  # session ID for each pane slot
+        self._focused_pane=0       # int index 0-5 — which pane last had keyboard focus
+        self._num_panes=1          # number of visible panes (1-6)
+        self._pane_ids=[-1,-1,-1,-1,-1,-1]  # session ID for each pane slot
         self._notes_vis=True; self._last_notif:Optional[tuple]=None
         self._cb=SharedClipboard()
         self._vault=SecureVault()
@@ -3667,7 +3645,11 @@ class AIDEWindow(QMainWindow):
         self._tab_bar.rename_requested.connect(self._rename_tab_by_id)
         self._tab_bar.close_requested.connect(self._close_tab_with_confirm)
         self._tab_bar.tabs_reordered.connect(self._on_tabs_reordered)
-        ml.addWidget(self._tab_bar)
+        self._sidebar_splitter=QSplitter(Qt.Orientation.Horizontal)
+        self._sidebar_splitter.setHandleWidth(3)
+        self._sidebar_splitter.setStyleSheet(f"QSplitter::handle{{background:{C_SURFACE.name()};}}QSplitter::handle:hover{{background:{C_ACCENT.name()}44;}}")
+        self._sidebar_splitter.addWidget(self._tab_bar)
+        ml.addWidget(self._sidebar_splitter, 1)
         term_area=QWidget(); term_area.setStyleSheet(f"background:{C_BG.name()};")
         tv=QVBoxLayout(term_area); tv.setContentsMargins(0,0,0,0); tv.setSpacing(0)
         self._notif_banner=NotifBanner(); tv.addWidget(self._notif_banner)
@@ -3687,49 +3669,75 @@ class AIDEWindow(QMainWindow):
         self._outer_splitter.addWidget(self._bot_splitter)
 
         def _make_pane(idx: int):
-            """Create a pane container with header + terminal; returns (widget, header, terminal)."""
+            """Create a pane container with header + terminal; returns (widget, header_widget, header_label, terminal)."""
             pane=QWidget(); pane.setStyleSheet("background:transparent;")
             lay=QVBoxLayout(pane); lay.setContentsMargins(0,0,0,0); lay.setSpacing(0)
-            hdr=QLabel(); hdr.setFixedHeight(22)
-            hdr.setStyleSheet(
-                f"background:{C_SURFACE.name()};color:{C_MUTED.name()};"
-                f"font-size:11px;font-family:'JetBrains Mono',monospace;"
-                f"padding:0 8px;border-bottom:1px solid #30363d;")
-            hdr.setVisible(False)
-            lay.addWidget(hdr)
+            hdr_w=QWidget(); hdr_w.setFixedHeight(22)
+            hdr_w.setStyleSheet(f"background:{C_SURFACE.name()};border-bottom:1px solid #30363d;")
+            hdr_w.setVisible(False)
+            hdr_lay=QHBoxLayout(hdr_w); hdr_lay.setContentsMargins(0,0,4,0); hdr_lay.setSpacing(0)
+            hdr_lbl=QLabel()
+            hdr_lbl.setStyleSheet(f"color:{C_MUTED.name()};font-size:11px;font-family:'JetBrains Mono',monospace;background:transparent;padding:0 8px;border:none;")
+            hdr_lay.addWidget(hdr_lbl, 1)
+            if idx > 0:
+                close_btn=QPushButton("×"); close_btn.setFixedSize(16,16)
+                close_btn.setStyleSheet(f"QPushButton{{background:transparent;color:{C_MUTED.name()};border:none;font-size:13px;line-height:1;padding:0;}}QPushButton:hover{{color:#ff6b6b;}}")
+                close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                close_btn.setToolTip("Close this pane")
+                close_btn.clicked.connect(lambda _, i=idx: self._remove_pane(i))
+                hdr_lay.addWidget(close_btn)
             term=TerminalWidget()
             term.prefix_action.connect(self._dispatch_action)
             term.split_tab_paste.connect(lambda text, i=idx: self._on_split_paste(i, text))
+            lay.addWidget(hdr_w)
             lay.addWidget(term, 1)
-            return pane, hdr, term
+            return pane, hdr_w, hdr_lbl, term
 
         # ── Pane 0 (main) ─────────────────────────────────────────────────────
-        self._main_pane, self._main_header, self._main_terminal = _make_pane(0)
+        self._main_pane, self._main_header, self._main_header_lbl, self._main_terminal = _make_pane(0)
         self._main_terminal.sent_to_waiting.connect(self._auto_advance_to_next_waiting)
         self._term_splitter.addWidget(self._main_pane)
 
         # ── Pane 1 (secondary, in QStackedWidget to support browser tabs) ─────
         self._split_panel=QStackedWidget(); self._split_panel.setVisible(False)
-        self._secondary_pane, self._secondary_header, self._secondary_terminal = _make_pane(1)
+        self._secondary_pane, self._secondary_header, self._secondary_header_lbl, self._secondary_terminal = _make_pane(1)
         self._split_panel.addWidget(self._secondary_pane)
         # per-tab browsers are lazily created in _get_or_create_browser()
         self._term_splitter.addWidget(self._split_panel)
 
-        # ── Panes 2 and 3 (bottom row) ────────────────────────────────────────
-        self._pane2_widget, self._pane2_header, self._pane2_terminal = _make_pane(2)
-        self._pane3_widget, self._pane3_header, self._pane3_terminal = _make_pane(3)
+        # ── Panes 2 and 3 (middle row) ────────────────────────────────────────
+        self._pane2_widget, self._pane2_header, self._pane2_header_lbl, self._pane2_terminal = _make_pane(2)
+        self._pane3_widget, self._pane3_header, self._pane3_header_lbl, self._pane3_terminal = _make_pane(3)
         self._pane2_widget.setVisible(False)
         self._pane3_widget.setVisible(False)
         self._bot_splitter.addWidget(self._pane2_widget)
         self._bot_splitter.addWidget(self._pane3_widget)
 
+        # ── Panes 4 and 5 (bottom row) ────────────────────────────────────────
+        self._row2_splitter=QSplitter(Qt.Orientation.Horizontal)
+        self._row2_splitter.setHandleWidth(3); self._row2_splitter.setStyleSheet(_splitter_ss)
+        self._row2_splitter.setVisible(False)
+        self._outer_splitter.addWidget(self._row2_splitter)
+        self._pane4_widget, self._pane4_header, self._pane4_header_lbl, self._pane4_terminal = _make_pane(4)
+        self._pane5_widget, self._pane5_header, self._pane5_header_lbl, self._pane5_terminal = _make_pane(5)
+        self._pane4_widget.setVisible(False)
+        self._pane5_widget.setVisible(False)
+        self._row2_splitter.addWidget(self._pane4_widget)
+        self._row2_splitter.addWidget(self._pane5_widget)
+
         # Convenience lists (index == pane index)
         self._terminals   =[self._main_terminal, self._secondary_terminal,
-                            self._pane2_terminal, self._pane3_terminal]
+                            self._pane2_terminal, self._pane3_terminal,
+                            self._pane4_terminal, self._pane5_terminal]
         self._pane_widgets=[self._main_pane, self._secondary_pane,
-                            self._pane2_widget, self._pane3_widget]
+                            self._pane2_widget, self._pane3_widget,
+                            self._pane4_widget, self._pane5_widget]
         self._pane_headers=[self._main_header, self._secondary_header,
-                            self._pane2_header, self._pane3_header]
+                            self._pane2_header, self._pane3_header,
+                            self._pane4_header, self._pane5_header]
+        self._pane_header_lbls=[self._main_header_lbl, self._secondary_header_lbl,
+                                self._pane2_header_lbl, self._pane3_header_lbl,
+                                self._pane4_header_lbl, self._pane5_header_lbl]
 
         tv.addWidget(self._outer_splitter, 1)
         self._notes_panel=NotesPanel()
@@ -3742,7 +3750,9 @@ class AIDEWindow(QMainWindow):
         self._main_splitter.addWidget(term_area)
         self._main_splitter.addWidget(self._notes_panel)
         self._main_splitter.setStretchFactor(0,1); self._main_splitter.setStretchFactor(1,0)
-        ml.addWidget(self._main_splitter,1)
+        self._sidebar_splitter.addWidget(self._main_splitter)
+        self._sidebar_splitter.setStretchFactor(0,0); self._sidebar_splitter.setStretchFactor(1,1)
+        self._sidebar_splitter.setSizes([220, 1060])
         root.addWidget(mid,1)
         QApplication.instance().focusChanged.connect(self._on_focus_changed)
         sb=self.statusBar(); sb.setFixedHeight(22)
@@ -3797,26 +3807,25 @@ class AIDEWindow(QMainWindow):
         self._terminals[pane_idx].set_session(self.sessions[tid])
         if was_focused: self._sync_notes_to_panel(tid)
         self._tab_bar.set_active(self.active_id,
-            next((self._pane_ids[i] for i in range(1,4) if self._pane_ids[i]>=0), -1))
+            next((self._pane_ids[i] for i in range(1,6) if self._pane_ids[i]>=0), -1))
         self._update_split_headers()
         self._terminals[pane_idx].setFocus()
 
     def _add_split_pane(self, tid: int):
-        """Add tid as the next available pane (up to 4), or replace the focused pane."""
+        """Add tid as the next available pane (up to 6), or replace the focused pane."""
         if tid not in self.sessions: return
         # If already shown in any pane, just focus it
         for i in range(self._num_panes):
             if self._pane_ids[i] == tid:
                 self._set_focused_pane(i); self._terminals[i].setFocus()
                 self._update_split_headers(); return
-        if self._num_panes < 4:
+        if self._num_panes < 6:
             new_idx = self._num_panes
             self._num_panes += 1
             self._pane_ids[new_idx] = tid
             self._terminals[new_idx].set_session(self.sessions[tid])
             self._terminals[new_idx].in_split = True
             if new_idx == 1:
-                # Pane 1 lives inside _split_panel
                 self._split_panel.setCurrentWidget(self._secondary_pane)
                 self._split_panel.setVisible(True)
                 total = self._term_splitter.width()
@@ -3825,38 +3834,45 @@ class AIDEWindow(QMainWindow):
             elif new_idx in (2, 3):
                 self._pane_widgets[new_idx].setVisible(True)
                 self._bot_splitter.setVisible(True)
-                # Split bottom row evenly
                 total = self._bot_splitter.width() or self._term_splitter.width()
                 if new_idx == 2:
                     self._bot_splitter.setSizes([total, 0])
-                    # Also split outer vertically
                     oh = self._outer_splitter.height()
-                    self._outer_splitter.setSizes([oh//2, oh//2])
+                    self._outer_splitter.setSizes([oh//2, oh//2, 0])
                 else:
                     self._bot_splitter.setSizes([total//2, total//2])
+            elif new_idx in (4, 5):
+                self._pane_widgets[new_idx].setVisible(True)
+                self._row2_splitter.setVisible(True)
+                total = self._row2_splitter.width() or self._term_splitter.width()
+                if new_idx == 4:
+                    self._row2_splitter.setSizes([total, 0])
+                    oh = self._outer_splitter.height()
+                    third = oh // 3
+                    self._outer_splitter.setSizes([third, third, third])
+                else:
+                    self._row2_splitter.setSizes([total//2, total//2])
             if not self.config.split_tip_shown and self._num_panes == 2:
                 self.config.split_tip_shown = True; self.config.save()
                 QTimer.singleShot(300, lambda: SplitTipDialog(self).exec())
             if self._split_mode != "browse": self._split_mode = "terminal"
         else:
-            # All 4 panes used — replace the focused one
+            # All 6 panes used — replace the focused one
             self._set_pane_session(self._focused_pane, tid); return
         for i in range(self._num_panes): self._terminals[i].in_split = True
         self._tab_bar.set_active(self.active_id,
-            next((self._pane_ids[i] for i in range(1,4) if self._pane_ids[i]>=0), -1))
+            next((self._pane_ids[i] for i in range(1,6) if self._pane_ids[i]>=0), -1))
         self._hotkey_bar.set_btn_active("split_term", self._num_panes > 1 and self._split_mode=="terminal")
         self._update_split_headers()
         self._update_status()
 
     def _remove_pane(self, pane_idx: int):
-        """Close pane pane_idx (valid for idx 1-3).  Shifts higher panes down so no holes."""
+        """Close pane pane_idx (valid for idx 1-5). Shifts higher panes down so no holes."""
         if pane_idx < 1 or pane_idx >= self._num_panes: return
-        # Shift panes down to fill the gap
         for i in range(pane_idx, self._num_panes - 1):
             next_tid = self._pane_ids[i + 1]
             self._pane_ids[i] = next_tid
             self._terminals[i].set_session(self.sessions.get(next_tid) if next_tid >= 0 else None)
-        # Clear last slot
         last = self._num_panes - 1
         self._pane_ids[last] = -1
         self._terminals[last].set_session(None)
@@ -3865,20 +3881,15 @@ class AIDEWindow(QMainWindow):
         else:
             self._pane_widgets[last].setVisible(False)
         self._num_panes -= 1
-        if self._num_panes <= 2:
-            self._bot_splitter.setVisible(False)
-        if self._num_panes == 1:
-            self._split_mode = "none"
-        # Clamp focused pane
+        if self._num_panes <= 4: self._row2_splitter.setVisible(False)
+        if self._num_panes <= 2: self._bot_splitter.setVisible(False)
+        if self._num_panes == 1: self._split_mode = "none"
         if self._focused_pane >= self._num_panes:
             self._focused_pane = 0
             self._sync_notes_to_panel(self._pane_ids[0])
-        for i in range(4): self._terminals[i].in_split = (self._num_panes > 1)
-        if self._num_panes <= 2:
-            self._bot_splitter.setVisible(False)
-        if self._num_panes == 1:
-            self._split_mode = "none"
-        for i in range(4): self._terminals[i].in_split = (self._num_panes > 1)
+        for i in range(6): self._terminals[i].in_split = (self._num_panes > 1)
+        self._update_split_headers()
+        self._update_status()
 
     # ── tab lifecycle ──────────────────────────────────────────────────────────
     def _env_with_vars(self, session: "TermSession") -> dict:
@@ -3910,8 +3921,8 @@ class AIDEWindow(QMainWindow):
         self._vault.drop_tab(tid)
         if (bp := self._browsers.pop(tid, None)):
             self._split_panel.removeWidget(bp); bp.deleteLater()
-        # Remove from any split pane (idx 1-3)
-        for i in range(1, 4):
+        # Remove from any split pane (idx 1-5)
+        for i in range(1, 6):
             if self._pane_ids[i] == tid:
                 self._remove_pane(i)
         if self.active_id==tid: self._switch_to(next(iter(self.sessions)))
@@ -3949,7 +3960,7 @@ class AIDEWindow(QMainWindow):
         # Only update notes panel if pane 0 is the focused one
         if self._focused_pane == 0:
             self._sync_notes_to_panel(tid)
-        split_secondary = next((self._pane_ids[i] for i in range(1,4) if self._pane_ids[i]>=0), -1)
+        split_secondary = next((self._pane_ids[i] for i in range(1,6) if self._pane_ids[i]>=0), -1)
         self._tab_bar.set_active(tid, split_secondary if self._split_mode=="terminal" else -1)
         self._main_terminal.update(); self._update_status()
         # Show the previous-session screenshot overlay only on the first
@@ -3994,7 +4005,7 @@ class AIDEWindow(QMainWindow):
         if mode == "none":
             self._split_mode = "none"
             # Hide and detach all extra panes
-            for i in range(3, 0, -1):
+            for i in range(5, 0, -1):
                 if self._pane_ids[i] >= 0 or i < self._num_panes:
                     self._pane_ids[i] = -1
                     self._terminals[i].set_session(None)
@@ -4003,6 +4014,7 @@ class AIDEWindow(QMainWindow):
                     else:
                         self._pane_widgets[i].setVisible(False)
             self._bot_splitter.setVisible(False)
+            self._row2_splitter.setVisible(False)
             self._secondary_id = -1
             self._num_panes = 1
             # Restore notes panel to pane 0 if it was on another pane
@@ -4048,9 +4060,14 @@ class AIDEWindow(QMainWindow):
         self._tab_bar.add_card(s, self.config.card)
         self._terminals[1].set_session(s); return tid
 
-    _HDR_FOCUSED   = f"background:{C_ACCENT.name()};color:#000;font-weight:600;font-size:11px;font-family:'JetBrains Mono',monospace;padding:0 8px;border-bottom:1px solid {C_ACCENT.name()};"
-    _HDR_UNFOCUSED = f"background:{C_SURFACE.name()};color:{C_MUTED.name()};font-size:11px;font-family:'JetBrains Mono',monospace;padding:0 8px;border-bottom:1px solid #30363d;"
-    _HDR_WAITING   = f"background:#1f2d3d;color:{C_ACCENT.name()};font-weight:700;font-size:11px;font-family:'JetBrains Mono',monospace;padding:0 8px;border-bottom:1px solid {C_ACCENT.name()};"
+    # Header wrapper (QWidget) background styles
+    _HDR_FOCUSED   = f"background:{C_ACCENT.name()};border-bottom:1px solid {C_ACCENT.name()};"
+    _HDR_UNFOCUSED = f"background:{C_SURFACE.name()};border-bottom:1px solid #30363d;"
+    _HDR_WAITING   = f"background:#1f2d3d;border-bottom:1px solid {C_ACCENT.name()};"
+    # Header label (QLabel) text styles
+    _LBL_FOCUSED   = f"color:#000;font-weight:600;font-size:11px;font-family:'JetBrains Mono',monospace;background:transparent;padding:0 8px;border:none;"
+    _LBL_UNFOCUSED = f"color:{C_MUTED.name()};font-size:11px;font-family:'JetBrains Mono',monospace;background:transparent;padding:0 8px;border:none;"
+    _LBL_WAITING   = f"color:{C_ACCENT.name()};font-weight:700;font-size:11px;font-family:'JetBrains Mono',monospace;background:transparent;padding:0 8px;border:none;"
     _SPIN_FRAMES   = ("⣾","⣽","⣻","⢿","⡿","⣟","⣯","⣷")
 
     def _header_indicator(self, session) -> str:
@@ -4067,24 +4084,29 @@ class AIDEWindow(QMainWindow):
         # Advance spinner frame on each refresh when active
         if active:
             self._blink_phase_i = getattr(self, "_blink_phase_i", 0) + 1
-        _shortcuts = ["⌘1", "⌘2", "⌘3", "⌘4"]
+        _shortcuts = ["⌘1", "⌘2", "⌘3", "⌘4", "⌘5", "⌘6"]
 
         def _label(session, shortcut):
             title = session.effective_title() if session else "—"
             ind = self._header_indicator(session)
             return f"  {shortcut}  {ind + '  ' if ind else ''}{title}"
 
-        def _style(session, is_focused):
+        def _lbl_style(session, is_focused):
+            if getattr(session, "waiting_input", False): return self._LBL_WAITING
+            return self._LBL_FOCUSED if is_focused else self._LBL_UNFOCUSED
+
+        def _hdr_style(session, is_focused):
             if getattr(session, "waiting_input", False): return self._HDR_WAITING
             return self._HDR_FOCUSED if is_focused else self._HDR_UNFOCUSED
 
-        for i, (hdr, term) in enumerate(zip(self._pane_headers, self._terminals)):
+        for i, (hdr, lbl, term) in enumerate(zip(self._pane_headers, self._pane_header_lbls, self._terminals)):
             visible = active and i < self._num_panes
             hdr.setVisible(visible)
             if visible:
                 sess = term.session
-                hdr.setText(_label(sess, _shortcuts[i]))
-                hdr.setStyleSheet(_style(sess, i == self._focused_pane))
+                lbl.setText(_label(sess, _shortcuts[i]))
+                lbl.setStyleSheet(_lbl_style(sess, i == self._focused_pane))
+                hdr.setStyleSheet(_hdr_style(sess, i == self._focused_pane))
 
     def _on_focus_changed(self, _old, new):
         """Track which split pane last received keyboard focus."""
@@ -4191,7 +4213,7 @@ class AIDEWindow(QMainWindow):
 
     def _refresh_cards(self):
         self._blink_phase=not getattr(self,"_blink_phase",False)
-        split_ids = set(self._pane_ids[i] for i in range(1,4) if self._pane_ids[i]>=0) \
+        split_ids = set(self._pane_ids[i] for i in range(1,6) if self._pane_ids[i]>=0) \
                     if self._split_mode=="terminal" else set()
         for tid,s in self.sessions.items():
             card=self._tab_bar._card_map.get(tid)
