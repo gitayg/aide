@@ -115,7 +115,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.14.1"
+VERSION      = "2.14.2"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -302,6 +302,9 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.14.2": [
+        ("⊞", "6-panel grid is now 3×2", "Split panels fill left-to-right then top-to-bottom: panes 1–3 across the top row, panes 4–6 across the bottom row"),
+    ],
     "2.14.1": [
         ("🤖", "Improved agent working detection", "Spinner and done signals are now evaluated independently — a chunk containing both a braille spinner and the ╰─ response border correctly ends the working state instead of getting stuck; ╭─ opening border transitions thinking→working immediately; spinner regex is tighter to skip stray ANSI sequences"),
     ],
@@ -3716,25 +3719,21 @@ class AIDEWindow(QMainWindow):
         # per-tab browsers are lazily created in _get_or_create_browser()
         self._term_splitter.addWidget(self._split_panel)
 
-        # ── Panes 2 and 3 (middle row) ────────────────────────────────────────
+        # ── Pane 2 (top row, 3rd column) ──────────────────────────────────────
         self._pane2_widget, self._pane2_header, self._pane2_header_lbl, self._pane2_terminal = _make_pane(2)
-        self._pane3_widget, self._pane3_header, self._pane3_header_lbl, self._pane3_terminal = _make_pane(3)
         self._pane2_widget.setVisible(False)
-        self._pane3_widget.setVisible(False)
-        self._bot_splitter.addWidget(self._pane2_widget)
-        self._bot_splitter.addWidget(self._pane3_widget)
+        self._term_splitter.addWidget(self._pane2_widget)
 
-        # ── Panes 4 and 5 (bottom row) ────────────────────────────────────────
-        self._row2_splitter=QSplitter(Qt.Orientation.Horizontal)
-        self._row2_splitter.setHandleWidth(3); self._row2_splitter.setStyleSheet(_splitter_ss)
-        self._row2_splitter.setVisible(False)
-        self._outer_splitter.addWidget(self._row2_splitter)
+        # ── Panes 3, 4, 5 (bottom row) ────────────────────────────────────────
+        self._pane3_widget, self._pane3_header, self._pane3_header_lbl, self._pane3_terminal = _make_pane(3)
         self._pane4_widget, self._pane4_header, self._pane4_header_lbl, self._pane4_terminal = _make_pane(4)
         self._pane5_widget, self._pane5_header, self._pane5_header_lbl, self._pane5_terminal = _make_pane(5)
+        self._pane3_widget.setVisible(False)
         self._pane4_widget.setVisible(False)
         self._pane5_widget.setVisible(False)
-        self._row2_splitter.addWidget(self._pane4_widget)
-        self._row2_splitter.addWidget(self._pane5_widget)
+        self._bot_splitter.addWidget(self._pane3_widget)
+        self._bot_splitter.addWidget(self._pane4_widget)
+        self._bot_splitter.addWidget(self._pane5_widget)
 
         # Convenience lists (index == pane index)
         self._terminals   =[self._main_terminal, self._secondary_terminal,
@@ -3836,33 +3835,32 @@ class AIDEWindow(QMainWindow):
             self._pane_ids[new_idx] = tid
             self._terminals[new_idx].set_session(self.sessions[tid])
             self._terminals[new_idx].in_split = True
+            tw = self._term_splitter.width() or 800
             if new_idx == 1:
                 self._split_panel.setCurrentWidget(self._secondary_pane)
                 self._split_panel.setVisible(True)
-                total = self._term_splitter.width()
-                self._term_splitter.setSizes([total//2, total//2])
+                self._term_splitter.setSizes([tw//2, tw//2, 0])
                 threading.Thread(target=_tennis_serve_sound, daemon=True).start()
-            elif new_idx in (2, 3):
-                self._pane_widgets[new_idx].setVisible(True)
+            elif new_idx == 2:
+                # Complete top row: 3 equal columns
+                self._pane2_widget.setVisible(True)
+                self._term_splitter.setSizes([tw//3, tw//3, tw//3])
+            elif new_idx == 3:
+                # First pane in bottom row — split outer vertically
+                self._pane3_widget.setVisible(True)
                 self._bot_splitter.setVisible(True)
-                total = self._bot_splitter.width() or self._term_splitter.width()
-                if new_idx == 2:
-                    self._bot_splitter.setSizes([total, 0])
-                    oh = self._outer_splitter.height()
-                    self._outer_splitter.setSizes([oh//2, oh//2, 0])
-                else:
-                    self._bot_splitter.setSizes([total//2, total//2])
-            elif new_idx in (4, 5):
-                self._pane_widgets[new_idx].setVisible(True)
-                self._row2_splitter.setVisible(True)
-                total = self._row2_splitter.width() or self._term_splitter.width()
-                if new_idx == 4:
-                    self._row2_splitter.setSizes([total, 0])
-                    oh = self._outer_splitter.height()
-                    third = oh // 3
-                    self._outer_splitter.setSizes([third, third, third])
-                else:
-                    self._row2_splitter.setSizes([total//2, total//2])
+                self._bot_splitter.setSizes([tw, 0, 0])
+                oh = self._outer_splitter.height()
+                self._outer_splitter.setSizes([oh//2, oh//2])
+            elif new_idx == 4:
+                self._pane4_widget.setVisible(True)
+                bw = self._bot_splitter.width() or tw
+                self._bot_splitter.setSizes([bw//2, bw//2, 0])
+            elif new_idx == 5:
+                # Complete bottom row: 3 equal columns
+                self._pane5_widget.setVisible(True)
+                bw = self._bot_splitter.width() or tw
+                self._bot_splitter.setSizes([bw//3, bw//3, bw//3])
             if not self.config.split_tip_shown and self._num_panes == 2:
                 self.config.split_tip_shown = True; self.config.save()
                 QTimer.singleShot(300, lambda: SplitTipDialog(self).exec())
@@ -3892,8 +3890,7 @@ class AIDEWindow(QMainWindow):
         else:
             self._pane_widgets[last].setVisible(False)
         self._num_panes -= 1
-        if self._num_panes <= 4: self._row2_splitter.setVisible(False)
-        if self._num_panes <= 2: self._bot_splitter.setVisible(False)
+        if self._num_panes <= 3: self._bot_splitter.setVisible(False)
         if self._num_panes == 1: self._split_mode = "none"
         if self._focused_pane >= self._num_panes:
             self._focused_pane = 0
@@ -4025,7 +4022,6 @@ class AIDEWindow(QMainWindow):
                     else:
                         self._pane_widgets[i].setVisible(False)
             self._bot_splitter.setVisible(False)
-            self._row2_splitter.setVisible(False)
             self._secondary_id = -1
             self._num_panes = 1
             # Restore notes panel to pane 0 if it was on another pane
