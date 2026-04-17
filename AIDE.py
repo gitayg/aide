@@ -115,7 +115,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.13.5"
+VERSION      = "2.13.6"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -302,6 +302,9 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.13.6": [
+        ("🧹", "Cleaner info bar in single-pane mode", "Terminal name is no longer shown in the top info bar when only one pane is open — the sidebar already identifies it"),
+    ],
     "2.13.5": [
         ("🎨", "Paste image as ASCII art", "Right-click in any terminal → 'Paste image as ASCII art' converts a clipboard screenshot to ASCII characters and pastes the result as text"),
     ],
@@ -4566,7 +4569,8 @@ class AIDEWindow(QMainWindow):
             return
         parts=[]
         if s.watching: parts.append("👁")
-        parts.append(s.effective_title())
+        if self._num_panes > 1 or self._split_mode == "browse":
+            parts.append(s.effective_title())
         if s.info.ssh_host:  parts.append(f"⬡ {s.info.ssh_host}")
         if s.info.local_url: parts.append(f"🌐 {s.info.local_url}")
         if self._num_panes > 1: parts.append(f"[{self._num_panes} panes]")
