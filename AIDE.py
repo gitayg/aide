@@ -115,7 +115,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.14.3"
+VERSION      = "2.14.4"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -302,6 +302,9 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.14.4": [
+        ("📋", "Tab-paste picker for 3+ panes", "With 2 panes Tab still auto-sends to the other; with 3 or more a popup menu appears so you can click which pane receives the command"),
+    ],
     "2.14.3": [
         ("⌨", "Ctrl+↑/↓ cycles panes when in split mode", "While any split pane is focused, Ctrl+Up/Down moves focus between panes only — sidebar navigation resumes when back to a single terminal"),
     ],
@@ -4135,9 +4138,35 @@ class AIDEWindow(QMainWindow):
             w = w.parent() if callable(getattr(w, "parent", None)) else None
 
     def _on_split_paste(self, src_idx: int, text: str):
-        """Tab-paste from pane src_idx to the next pane in circular order."""
+        """Tab-paste from pane src_idx. With 2 panes auto-sends; with 3+ shows a picker menu."""
         if self._num_panes <= 1: return
-        dst_idx = (src_idx + 1) % self._num_panes
+        if self._num_panes == 2:
+            dst_idx = 1 - src_idx  # the only other pane
+            self._do_split_paste(src_idx, dst_idx, text)
+            return
+        # 3+ panes: show a popup menu to pick the target
+        menu = QMenu(self)
+        menu.setStyleSheet(
+            f"QMenu{{background:{C_SURFACE.name()};color:{C_FG.name()};"
+            f"border:1px solid {C_ACCENT.name()}44;border-radius:4px;padding:2px;}}"
+            f"QMenu::item{{padding:5px 14px;font-size:12px;font-family:{FONT_FAMILY};}}"
+            f"QMenu::item:selected{{background:{C_ACCENT.name()}33;color:{C_ACCENT.name()};}}"
+        )
+        menu.setTitle("Send to pane…")
+        actions = {}
+        for i in range(self._num_panes):
+            if i == src_idx: continue
+            s = self._terminals[i].session
+            label = f"⌘{i+1}  {s.effective_title() if s else f'Pane {i+1}'}"
+            act = menu.addAction(label)
+            actions[act] = i
+        src_w = self._terminals[src_idx]
+        pos = src_w.mapToGlobal(src_w.rect().center())
+        chosen = menu.exec(pos)
+        if chosen and chosen in actions:
+            self._do_split_paste(src_idx, actions[chosen], text)
+
+    def _do_split_paste(self, src_idx: int, dst_idx: int, text: str):
         src_s = self._terminals[src_idx].session
         dst_s = self._terminals[dst_idx].session
         if not dst_s: return
@@ -4146,7 +4175,6 @@ class AIDEWindow(QMainWindow):
         payload = f"# incoming from [{sender}]\n{text}"
         dst_s.write(payload.encode("utf-8"))
         self._terminals[dst_idx].setFocus()
-        # Animate ball from source terminal to destination terminal
         src_w = self._terminals[src_idx]; dst_w = self._terminals[dst_idx]
         src_c = src_w.mapTo(self, src_w.rect().center())
         dst_c = dst_w.mapTo(self, dst_w.rect().center())
