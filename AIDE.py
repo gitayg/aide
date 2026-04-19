@@ -115,7 +115,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.14.4"
+VERSION      = "2.15.0"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -302,6 +302,9 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.15.0": [
+        ("🚀", "Uber mode", "Click 🚀 Uber in the toolbar to enable auto-focus: whenever Claude asks you a question in any terminal, AIDE immediately jumps to that pane or tab — no manual switching needed"),
+    ],
     "2.14.4": [
         ("📋", "Tab-paste picker for 3+ panes", "With 2 panes Tab still auto-sends to the other; with 3 or more a popup menu appears so you can click which pane receives the command"),
     ],
@@ -602,13 +605,15 @@ class AppConfig:
     last_seen_mtime:float            = 0.0   # mtime of AIDE.py at last run
     last_seen_version:str            = ""    # version string at last run, e.g. "2.1.1"
     split_tip_shown:bool             = False  # one-time split-view tip shown
+    uber_mode:      bool             = False  # auto-focus terminal when Claude asks a question
     def to_dict(self):
         return {"notif":self.notif.to_dict(),"card":self.card.to_dict(),
                 "shell":self.shell,"auto_restart":self.auto_restart,
                 "env_overrides":self.env_overrides,
                 "last_seen_mtime":self.last_seen_mtime,
                 "last_seen_version":self.last_seen_version,
-                "split_tip_shown":self.split_tip_shown}
+                "split_tip_shown":self.split_tip_shown,
+                "uber_mode":self.uber_mode}
     @classmethod
     def from_dict(cls, d):
         return cls(notif=NotifConfig.from_dict(d.get("notif",{})),
@@ -617,7 +622,8 @@ class AppConfig:
                    env_overrides=d.get("env_overrides",{}),
                    last_seen_mtime=float(d.get("last_seen_mtime",0.0)),
                    last_seen_version=d.get("last_seen_version",""),
-                   split_tip_shown=bool(d.get("split_tip_shown",False)))
+                   split_tip_shown=bool(d.get("split_tip_shown",False)),
+                   uber_mode=bool(d.get("uber_mode",False)))
     def save(self):
         try: CONFIG_FILE.write_text(json.dumps(self.to_dict(),indent=2))
         except: pass
@@ -2593,6 +2599,7 @@ class HotkeyBar(QWidget):
         ("🐙","GitHub","github_tokens","^B-g"),
         ("🔔","Notifs","configure_notifs","^B-s"),
         ("🃏","Cards","configure_cards","^B-c"),
+        ("🚀","Uber","toggle_uber","^B-u"),
     ]
 
     def __init__(self,parent=None):
@@ -3611,6 +3618,7 @@ class AIDEWindow(QMainWindow):
         self._build_ui(); _build_keymap()
         self._start_dashboard()
         self._hotkey_bar.set_btn_active("toggle_notes", self._notes_vis)
+        self._hotkey_bar.set_btn_active("toggle_uber", self.config.uber_mode)
         for interval,fn in [(50,self._process_events),(1000,self._check_idle),
                              (500,self._refresh_cards),(30000,self._save_session),
                              (5000,self._check_for_update)]:
@@ -4201,7 +4209,10 @@ class AIDEWindow(QMainWindow):
             try: ev=_EVENT_Q.get_nowait()
             except queue.Empty: break
             if ev[0]=="notif": self._show_notif(ev[1],ev[2],ev[3])
-            elif ev[0]=="blink": QApplication.alert(self,3000)
+            elif ev[0]=="blink":
+                QApplication.alert(self,3000)
+                if self.config.uber_mode:
+                    self._uber_focus(ev[1])
             elif ev[0]=="github_update" and not self._update_pending:
                 self._update_pending=True
                 remote_ver=ev[1]
@@ -4466,6 +4477,26 @@ class AIDEWindow(QMainWindow):
 
     def _set_font_size(self,size:int):
         for t in self._terminals: t.set_font_size(size)
+
+    def _uber_focus(self, tid: int):
+        """Uber mode: auto-focus the terminal that just got a question from Claude."""
+        if tid not in self.sessions: return
+        # If already the active focused terminal, nothing to do
+        if tid == self.active_id and self._focused_pane == 0: return
+        # If the session is visible in a split pane, focus that pane
+        for i in range(self._num_panes):
+            if self._pane_ids[i] == tid:
+                self._set_focused_pane(i)
+                self._terminals[i].setFocus()
+                self._update_split_headers()
+                return
+        # Otherwise switch the active tab
+        self._switch_to(tid)
+
+    def _action_toggle_uber(self):
+        self.config.uber_mode = not self.config.uber_mode
+        self.config.save()
+        self._hotkey_bar.set_btn_active("toggle_uber", self.config.uber_mode)
 
     def _action_toggle_watch(self):
         if self.active_id<0: return
