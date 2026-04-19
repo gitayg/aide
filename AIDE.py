@@ -115,7 +115,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.15.5"
+VERSION      = "2.15.6"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -329,6 +329,9 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.15.6": [
+        ("🏷", "Tag deduplication toggle in Cards settings", "Open Cards (^B-c) and toggle 'Hide repeated tag names' — when on, consecutive cards sharing a tag show the tag only on the first card; when off, every card shows its tags"),
+    ],
     "2.15.5": [
         ("▌", "Cursor block always visible", "The text cursor now renders as a solid blue block even when positioned on an empty cell, so you can always see where you are while typing or navigating"),
     ],
@@ -630,12 +633,14 @@ class NotifConfig:
 
 @dataclass
 class CardConfig:
-    fields:    List[str] = field(default_factory=lambda: ["title","cwd","cmd"])
-    show_tags: bool      = True
+    fields:     List[str] = field(default_factory=lambda: ["title","cwd","cmd"])
+    show_tags:  bool      = True
+    dedup_tags: bool      = True
     def to_dict(self):  return asdict(self)
     @classmethod
     def from_dict(cls, d): return cls(fields=d.get("fields",["title","cwd","cmd"]),
-                                      show_tags=d.get("show_tags",True))
+                                      show_tags=d.get("show_tags",True),
+                                      dedup_tags=d.get("dedup_tags",True))
 
 @dataclass
 class AppConfig:
@@ -2379,6 +2384,7 @@ class TabBar(QWidget):
         self._tag_filter: str = ""
         self._tag_pills: dict = {}
         self._sort_mode: str = ""  # "" = insertion order, SORT_TAG, SORT_RECENT
+        self.dedup_tags: bool = True
 
     def set_dashboard_url(self, url: str):
         self._dash_url.setText(url)
@@ -2470,7 +2476,7 @@ class TabBar(QWidget):
             passes_unread = not self._unread_filter or card._unread
             visible = passes_tag and passes_unread
             if visible:
-                card._show_tag = (tag_key != prev_visible_tag)
+                card._show_tag = (not self.dedup_tags) or (tag_key != prev_visible_tag)
                 prev_visible_tag = tag_key
             self._cl.insertWidget(self._cl.count()-1, card)
             card.setVisible(visible)
@@ -3458,12 +3464,17 @@ class CardConfigDialog(QDialog):
         self._show_tags_cb=QCheckBox("Show tags on cards")
         self._show_tags_cb.setChecked(getattr(cfg,"show_tags",True))
         lay.addWidget(self._show_tags_cb)
+        self._dedup_tags_cb=QCheckBox("Hide repeated tag names (deduplicate)")
+        self._dedup_tags_cb.setChecked(getattr(cfg,"dedup_tags",True))
+        self._dedup_tags_cb.setToolTip("When consecutive cards share the same tag, only show the tag on the first card")
+        lay.addWidget(self._dedup_tags_cb)
         bb=QDialogButtonBox(QDialogButtonBox.StandardButton.Save|QDialogButtonBox.StandardButton.Cancel)
         _primary_btn(bb.button(QDialogButtonBox.StandardButton.Save))
         bb.accepted.connect(self._save); bb.rejected.connect(self.reject); lay.addWidget(bb)
     def _save(self):
         self._result=([k for k in self._checks if self._checks[k].isChecked()],
-                      self._show_tags_cb.isChecked()); self.accept()
+                      self._show_tags_cb.isChecked(),
+                      self._dedup_tags_cb.isChecked()); self.accept()
     def get_result(self)->Optional[tuple]: return self._result
 
 class NotifConfigDialog(QDialog):
@@ -3734,6 +3745,7 @@ class AIDEWindow(QMainWindow):
         self._info_bar=AIInfoBar(); self._info_bar.setVisible(False)
         mid=QWidget(); ml=QHBoxLayout(mid); ml.setContentsMargins(0,0,0,0); ml.setSpacing(0)
         self._tab_bar=TabBar()
+        self._tab_bar.dedup_tags=self.config.card.dedup_tags
         self._tab_bar.tab_selected.connect(self._on_tab_clicked)
         self._tab_bar.shift_tab_selected.connect(self._on_shift_tab_clicked)
         self._tab_bar.new_tab_clicked.connect(lambda: self._new_tab())
@@ -4655,12 +4667,15 @@ class AIDEWindow(QMainWindow):
         if dlg.exec()==QDialog.DialogCode.Accepted:
             result=dlg.get_result()
             if result:
-                fields,show_tags=result
+                fields,show_tags,dedup_tags=result
                 self.config.card.fields=fields or self.config.card.fields
                 self.config.card.show_tags=show_tags
+                self.config.card.dedup_tags=dedup_tags
                 self.config.save()
+                self._tab_bar.dedup_tags=dedup_tags
                 for tid in self.sessions:
                     if c:=self._tab_bar._card_map.get(tid): c.cfg=self.config.card; c.refresh()
+                self._tab_bar.rebuild_layout(self._tab_bar._sessions)
 
     def _action_open_settings(self): self._open_settings()
 
