@@ -115,7 +115,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.15.2"
+VERSION      = "2.15.3"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -329,6 +329,9 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.15.3": [
+        ("🔍", "Fixed waiting detection", "ANSI escape codes are now stripped before pattern matching, so 'Human:' and confirmation prompts are reliably detected even when colour codes are interleaved"),
+    ],
     "2.15.2": [
         ("🔔", "Blop sound on auto-focus", "A soft 'blop' plays whenever focus automatically moves to a terminal with a new question from Claude"),
     ],
@@ -1084,6 +1087,7 @@ class TermInfo:
     process:str=""; title:str=""; local_url:str=""; cwd_full:str=""
 
 _EVENT_Q: queue.Queue = queue.Queue()
+_ANSI_RE = re.compile(r'(\x9B|\x1B\[)[0-?]*[ -\/]*[@-~]|\x1b[@-_]|\x1b[NOP]')
 
 class TermSession:
     _AI_PATS = [
@@ -1209,9 +1213,10 @@ class TermSession:
         self.dirty=True; self.last_out_time=time.time(); self._notif_armed=True
         if self.screen.title and self.screen.title!=self.info.title:
             self.info.title=self.screen.title; self._parse_ssh(self.screen.title)
+        clean = _ANSI_RE.sub('', text)
         was_waiting=self.waiting_input
         for pat,msg in self._AI_PATS:
-            if pat.search(text):
+            if pat.search(clean):
                 self.waiting_input=True; self.claude_working=False; self.claude_thinking=False
                 self.last_ping_time=time.time(); self.last_waiting_at=self.last_ping_time
                 if not was_waiting:
@@ -1996,6 +2001,7 @@ class TabCard(QFrame):
         self._unread=False; self._left_color=QColor("transparent")
         self._press_pos=None; self._drop_indicator=0  # -1 above, 0 none, 1 below
         self.setAcceptDrops(True)
+        self._show_tag = True  # set False by TabBar when previous card has same tag
         self.setFixedHeight(62); self.setCursor(Qt.CursorShape.PointingHandCursor)
         # Left 3 px is reserved for the status bar drawn in paintEvent; content starts at 5px
         lay=QVBoxLayout(self); lay.setContentsMargins(8,4,4,4); lay.setSpacing(1)
@@ -2071,7 +2077,11 @@ class TabCard(QFrame):
         show_tags = getattr(self.cfg, "show_tags", True)
         tags_html = ""
         if show_tags and s.tags:
-            tags_html = "".join(f'<span style="color:{_acc};font-size:10px">[{t}]</span>' for t in s.tags) + " "
+            if self._show_tag:
+                tags_html = "".join(f'<span style="color:{_acc};font-size:10px">[{t}]</span>' for t in s.tags) + " "
+            else:
+                # Render tag as transparent placeholder to preserve alignment
+                tags_html = "".join(f'<span style="color:transparent;font-size:10px">[{t}]</span>' for t in s.tags) + " "
         plain = s.effective_title()
         fg_col = C_FG.name() if waiting else C_MUTED.name()
         if tags_html or waiting:
@@ -2432,6 +2442,7 @@ class TabBar(QWidget):
         elif self._sort_mode == self.SORT_RECENT:
             tids.sort(key=lambda tid: getattr(self._sessions[tid], 'last_waiting_at', 0.0), reverse=True)
 
+        prev_visible_tag = None
         for tid in tids:
             card = self._card_map.get(tid)
             if not card: continue
@@ -2440,8 +2451,14 @@ class TabBar(QWidget):
             tag_key = tags[0] if tags else ""
             passes_tag = not self._tag_filter or tag_key == self._tag_filter
             passes_unread = not self._unread_filter or card._unread
+            visible = passes_tag and passes_unread
+            if visible:
+                card._show_tag = (tag_key != prev_visible_tag)
+                prev_visible_tag = tag_key
             self._cl.insertWidget(self._cl.count()-1, card)
-            card.setVisible(passes_tag and passes_unread)
+            card.setVisible(visible)
+            if visible:
+                card.refresh()
 
     # ── card management ────────────────────────────────────────────────────────
     def add_card(self, s: TermSession, cfg: CardConfig) -> "TabCard":
