@@ -1198,8 +1198,14 @@ class TermSession:
             except OSError: break
         self.alive=False
 
+    _DBG_PATH = "/tmp/aide_debug.log"
+
     def _handle(self,data:bytes)->None:
         text=data.decode("utf-8",errors="replace")
+        import os as _os
+        if _os.path.exists(self._DBG_PATH):
+            with open(self._DBG_PATH,"a") as _f:
+                _f.write(f"[tid={self.tab_id} work={self.claude_working} think={self.claude_thinking} wait={self.waiting_input}] {repr(text)}\n")
         self._output_tail=(self._output_tail+text)[-self._TAIL_LEN:]
         if cwd:=self._osc7(data): self.info.cwd=_shorten_path(cwd); self.info.cwd_full=cwd
         if m:=self._URL_RE.search(text): self.info.local_url=m.group(0)
