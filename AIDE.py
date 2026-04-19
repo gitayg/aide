@@ -115,7 +115,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.15.3"
+VERSION      = "2.15.4"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -329,6 +329,9 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.15.4": [
+        ("📍", "Cursor position in status bar", "The bottom status bar now shows the terminal cursor row:col (e.g. 5:32) so you can see exactly where the text cursor is while editing"),
+    ],
     "2.15.3": [
         ("🔍", "Fixed waiting detection", "ANSI escape codes are now stripped before pattern matching, so 'Human:' and confirmation prompts are reliably detected even when colour codes are interleaved"),
     ],
@@ -4326,7 +4329,9 @@ class AIDEWindow(QMainWindow):
         s=self.sessions.get(self.active_id)
         if s:
             full=s.info.cwd_full or s.info.cwd
-            self._cwd_bar.setText(f"📁  {full}" if full else "")
+            cur = s.screen.cursor
+            pos_str = f"  {cur.y+1}:{cur.x+1}"
+            self._cwd_bar.setText((f"📁  {full}" if full else "") + pos_str)
 
     def _update_waiting_badge(self):
         count=sum(1 for s in self.sessions.values() if getattr(s,"waiting_input",False))
@@ -4735,7 +4740,9 @@ class AIDEWindow(QMainWindow):
         elif self._split_mode=="browse": parts.append("[split: browse]")
         self._hotkey_bar.update_info("  ".join(parts))
         full=s.info.cwd_full or s.info.cwd
-        self._cwd_bar.setText(f"📁  {full}" if full else "")
+        cur = s.screen.cursor
+        pos_str = f"  {cur.y+1}:{cur.x+1}"
+        self._cwd_bar.setText((f"📁  {full}" if full else "") + pos_str)
 
     # ── encrypted variables vault ──────────────────────────────────────────────
     def _on_vault_unlock_requested(self):
