@@ -115,7 +115,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.15.7"
+VERSION      = "2.15.8"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -329,6 +329,9 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.15.8": [
+        ("🔍", "Fixed working + waiting detection", "Working: any braille spinner char now triggers the working state (previous regex required following text that cursor-movement codes prevented matching). Waiting: detected via the ╰─ response-box closing border with a 300 ms debounce so intermediate tool-result boxes don't fire false alerts — 'Human:' pattern removed since Claude Code CLI never outputs it"),
+    ],
     "2.15.7": [
         ("⚙", "Simplified card icons", "Sidebar cards now show only two icons: a spinning ◐⚙ gear while Claude is working/thinking, and a blinking ? while waiting for your input — all other icons removed"),
     ],
@@ -1105,21 +1108,19 @@ _ANSI_RE = re.compile(r'(\x9B|\x1B\[)[0-?]*[ -\/]*[@-~]|\x1b[@-_]|\x1b[NOP]')
 
 class TermSession:
     _AI_PATS = [
-        (re.compile(r"Human:\s*$",re.M),           "Claude is waiting"),
         (re.compile(r"\[y/n\]|\[Y/n\]|\[yes/no\]",re.I), "Waiting for confirmation"),
         (re.compile(r"Press any key",re.I),         "Waiting for keypress"),
         (re.compile(r">>>\s*$",re.M),               "Python REPL waiting"),
     ]
-    # Claude CLI exclusively uses braille block spinner characters (U+2800 range).
-    # Virtually no other tool uses these, making them a near-zero false-positive signal.
-    # _THINKING_RE: braille char + optional ANSI + "Thinking" on the same line.
-    # _WORKING_RE:  braille char + space/ANSI + non-whitespace word (tool name / status text).
-    #               Tighter than "any braille char" to avoid false hits from stray unicode.
-    # _DONE_RE:     Claude wraps responses in a ╭─…╰─ box; the closing ╰─ means done.
-    # _START_RE:    Opening ╭─ of the response box — Claude started writing (thinking→working).
+    # Claude CLI spinner detection.
+    # _THINKING_RE: braille char + anything on same line + "Thinking" — handles all ANSI variants.
+    # _WORKING_RE:  any braille char at all — presence alone is unambiguous (Claude Code is the
+    #               only common tool using Braille Pattern chars as a UI spinner).
+    # _DONE_RE:     closing ╰─ box border signals Claude finished writing its response.
+    # _START_RE:    opening ╭─ border — transitions thinking→working.
     _SPINNER_CHARS = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
-    _THINKING_RE = re.compile(rf'[{_SPINNER_CHARS}](?:\x1b\[[0-9;]*m)*\s*[Tt]hinking')
-    _WORKING_RE  = re.compile(rf'[{_SPINNER_CHARS}](?:\x1b\[[0-9;]*m|\s)*\S')
+    _THINKING_RE = re.compile(rf'[{_SPINNER_CHARS}][^\n]*[Tt]hinking')
+    _WORKING_RE  = re.compile(rf'[{_SPINNER_CHARS}]')
     _DONE_RE     = re.compile(r'╰[─━]')
     _START_RE    = re.compile(r'╭[─━]')
     # Safety-net decay: clear flags if no spinner arrives for this many seconds.
@@ -1206,27 +1207,38 @@ class TermSession:
         # This prevents malicious terminal output from injecting shell metacharacters.
         if m:=re.search(r"claude --resume ([a-zA-Z0-9_-]+)",text):
             self.claude_resume_cmd=f"claude --resume {m.group(1)}"
-        # Evaluate spinner and done independently so that a chunk containing both
-        # (last spinner frame + closing ╰─ border) correctly ends the working state.
+        # Spinner detection — braille char alone is sufficient; _THINKING_RE is checked first
+        # so the thinking/working distinction is preserved when text follows on the same line.
         _had_spinner = False
         if self._THINKING_RE.search(text):
             self.claude_thinking=True; self.claude_working=False
+            self.waiting_input=False
             self._ai_active_time=time.time(); _had_spinner=True
         elif self._WORKING_RE.search(text):
             self.claude_working=True; self.claude_thinking=False
+            self.waiting_input=False
             self._ai_active_time=time.time(); _had_spinner=True
-        # ╭─ box opening: Claude started writing its response (transition thinking→working)
+        # ╭─ box opening: transition thinking→working
         if not _had_spinner and self._START_RE.search(text) and self.claude_thinking:
             self.claude_thinking=False; self.claude_working=True
             self._ai_active_time=time.time()
-        # ╰─ box closing: done — checked separately so it overrides spinner in same chunk
+        # ╰─ box closing: Claude finished its response.
+        # If we were active and no new spinner came in the same chunk, schedule a
+        # waiting transition — delayed 300 ms so that intermediate tool-result boxes
+        # (which are immediately followed by another spinner) don't fire false alerts.
+        _was_active = self.claude_working or self.claude_thinking
         if self._DONE_RE.search(text):
             self.claude_working=False; self.claude_thinking=False
+            if _was_active and not _had_spinner:
+                self.waiting_input=True
+                self.last_ping_time=time.time(); self.last_waiting_at=self.last_ping_time
+                threading.Timer(0.3, self._fire_wait_events).start()
         if self._sf: self.stream.feed(text)
         else:        self.stream.feed(data)
         self.dirty=True; self.last_out_time=time.time(); self._notif_armed=True
         if self.screen.title and self.screen.title!=self.info.title:
             self.info.title=self.screen.title; self._parse_ssh(self.screen.title)
+        # Explicit prompts ([y/n], Python REPL, etc.) — fire immediately, no debounce needed
         clean = _ANSI_RE.sub('', text)
         was_waiting=self.waiting_input
         for pat,msg in self._AI_PATS:
@@ -1235,12 +1247,14 @@ class TermSession:
                 self.last_ping_time=time.time(); self.last_waiting_at=self.last_ping_time
                 if not was_waiting:
                     _EVENT_Q.put(("blink",self.tab_id,msg))
-                    # Fire a notification on every fresh "waiting" event,
-                    # not only for tabs the user explicitly marked as watching
-                    # — the active-tab filter in _show_notif still prevents
-                    # noise on the tab the user is actually looking at.
                     _EVENT_Q.put(("notif",self.tab_id,msg,self._output_tail))
                 break
+
+    def _fire_wait_events(self):
+        """Called 300 ms after ╰─ is detected. Only fires if still waiting (not cleared by a new spinner)."""
+        if self.waiting_input and not self.claude_working and not self.claude_thinking:
+            _EVENT_Q.put(("blink",self.tab_id,"Claude is waiting"))
+            _EVENT_Q.put(("notif",self.tab_id,"Claude is waiting",self._output_tail))
 
     # Valid hostname: letters, digits, hyphens, dots — no shell metacharacters.
     _HOSTNAME_RE = re.compile(r'^[a-zA-Z0-9]([a-zA-Z0-9\-.]*[a-zA-Z0-9])?$')
