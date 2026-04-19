@@ -115,7 +115,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.15.6"
+VERSION      = "2.15.7"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -329,6 +329,9 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.15.7": [
+        ("⚙", "Simplified card icons", "Sidebar cards now show only two icons: a spinning ◐⚙ gear while Claude is working/thinking, and a blinking ? while waiting for your input — all other icons removed"),
+    ],
     "2.15.6": [
         ("🏷", "Tag deduplication toggle in Cards settings", "Open Cards (^B-c) and toggle 'Hide repeated tag names' — when on, consecutive cards sharing a tag show the tag only on the first card; when off, every card shows its tags"),
     ],
@@ -2063,7 +2066,7 @@ class TabCard(QFrame):
             lbl.setMaximumWidth(190); lbl.setWordWrap(False); lay.addWidget(lbl)
         self.refresh()
 
-    _SPIN_FRAMES=("⣾","⣽","⣻","⢿","⡿","⣟","⣯","⣷")  # braille spinner, 8 frames
+    _GEAR_FRAMES=("◐","◓","◑","◒")  # quarter-circle rotation gives spinning-gear illusion
 
     def refresh(self):
         s=self.session; i=s.info
@@ -2080,20 +2083,17 @@ class TabCard(QFrame):
             self._task_badge.setVisible(False)
         # Unread dot
         self._unread_dot.setVisible(self._unread)
-        # Icon label (fixed-width slot): waiting → speech bubble, working/thinking → spinner,
-        # watching → eye, otherwise → app icon
-        if waiting:
-            self._icon_lbl.setText("💬")
-            self._icon_lbl.setStyleSheet(f"color:{C_ACCENT.name()};font-size:12px;background:transparent;")
-        elif thinking or working:
-            self._icon_lbl.setText(self._SPIN_FRAMES[getattr(self,"_gear_tick",0)%len(self._SPIN_FRAMES)])
-            self._icon_lbl.setStyleSheet(f"color:{C_ACCENT.name()};font-size:12px;background:transparent;")
-        elif s.watching:
-            self._icon_lbl.setText("👁")
-            self._icon_lbl.setStyleSheet("color:#8b949e;font-size:11px;background:transparent;")
+        # Icon: spinning gear while working/thinking, blinking ? while waiting, blank otherwise
+        if thinking or working:
+            frame = self._GEAR_FRAMES[getattr(self,"_gear_tick",0) % len(self._GEAR_FRAMES)]
+            self._icon_lbl.setText(f"{frame}⚙")
+            self._icon_lbl.setStyleSheet(f"color:{C_ACCENT.name()};font-size:11px;background:transparent;")
+        elif waiting:
+            self._icon_lbl.setText("?" if getattr(self,"_blink_phase",False) else " ")
+            self._icon_lbl.setStyleSheet(f"color:{C_ACCENT.name()};font-size:14px;font-weight:bold;background:transparent;")
         else:
-            self._icon_lbl.setText(_app_icon(i.last_cmd) or "")
-            self._icon_lbl.setStyleSheet("color:#8b949e;font-size:11px;background:transparent;")
+            self._icon_lbl.setText("")
+            self._icon_lbl.setStyleSheet("background:transparent;")
         # Title label: tags (accent, optional) + title text
         _acc = C_ACCENT.name()
         show_tags = getattr(self.cfg, "show_tags", True)
@@ -4168,14 +4168,17 @@ class AIDEWindow(QMainWindow):
     _LBL_FOCUSED   = f"color:#000;font-weight:600;font-size:11px;font-family:'JetBrains Mono',monospace;background:transparent;padding:0 8px;border:none;"
     _LBL_UNFOCUSED = f"color:{C_MUTED.name()};font-size:11px;font-family:'JetBrains Mono',monospace;background:transparent;padding:0 8px;border:none;"
     _LBL_WAITING   = f"color:{C_ACCENT.name()};font-weight:700;font-size:11px;font-family:'JetBrains Mono',monospace;background:transparent;padding:0 8px;border:none;"
-    _SPIN_FRAMES   = ("⣾","⣽","⣻","⢿","⡿","⣟","⣯","⣷")
+    _GEAR_FRAMES   = ("◐","◓","◑","◒")
 
     def _header_indicator(self, session) -> str:
         """Return a short status prefix for the pane header based on Claude state."""
         if not session: return ""
-        if getattr(session, "waiting_input", False): return "💬"
+        if getattr(session, "waiting_input", False):
+            i = getattr(self, "_blink_phase_i", 0)
+            return "?" if i % 2 == 0 else " "
         if getattr(session, "claude_working", False) or getattr(session, "claude_thinking", False):
-            return self._SPIN_FRAMES[getattr(self, "_blink_phase_i", 0) % len(self._SPIN_FRAMES)]
+            frame = self._GEAR_FRAMES[getattr(self, "_blink_phase_i", 0) % len(self._GEAR_FRAMES)]
+            return f"{frame}⚙"
         return ""
 
     def _update_split_headers(self):
