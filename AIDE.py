@@ -115,7 +115,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.15.1"
+VERSION      = "2.15.2"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -229,6 +229,33 @@ def _tennis_point_sound():
     subprocess.Popen(["afplay", str(tmp)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
+def _blop_sound():
+    """Soft round 'blop' — played when focus auto-moves to a new waiting question."""
+    import io, wave, math, array
+    SAMPLE_RATE = 44100
+    DURATION    = 0.18
+    VOLUME      = 0.45
+    n = int(SAMPLE_RATE * DURATION)
+    samples = array.array("h")
+    for i in range(n):
+        t = i / SAMPLE_RATE
+        # Pitch drops quickly (320 → 160 Hz) giving the round "blop" character
+        freq = 320 * math.exp(-t * 9)
+        # Fast attack (first 5 ms), then smooth exponential decay
+        attack = min(t / 0.005, 1.0)
+        env    = attack * math.exp(-t * 14) * VOLUME
+        tone   = math.sin(2 * math.pi * freq * t)
+        val    = int(env * 32767 * tone)
+        samples.append(max(-32767, min(32767, val)))
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(SAMPLE_RATE)
+        w.writeframes(samples.tobytes())
+    tmp = Path.home() / ".aide" / "blop.wav"
+    tmp.write_bytes(buf.getvalue())
+    subprocess.Popen(["afplay", str(tmp)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
 def _macos_notify(title: str, msg: str):
     """Post a macOS Notification Center alert via osascript."""
     try:
@@ -302,6 +329,9 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.15.2": [
+        ("🔔", "Blop sound on auto-focus", "A soft 'blop' plays whenever focus automatically moves to a terminal with a new question from Claude"),
+    ],
     "2.15.1": [
         ("🚀", "Auto-advance settles on working terminal", "After replying to all waiting terminals, focus automatically moves to the next terminal where Claude is actively working — so you're already there when it finishes"),
     ],
@@ -4360,6 +4390,7 @@ class AIDEWindow(QMainWindow):
         for i in range(1, len(ids)):
             tid = ids[(cur + i) % len(ids)]
             if tid != self.active_id and getattr(self.sessions[tid], "waiting_input", False):
+                threading.Thread(target=_blop_sound, daemon=True).start()
                 QTimer.singleShot(200, lambda t=tid: self._switch_to(t))
                 return
         # No waiting terminal found — settle on the next one that is working/thinking
@@ -4493,6 +4524,7 @@ class AIDEWindow(QMainWindow):
         if tid not in self.sessions: return
         # If already the active focused terminal, nothing to do
         if tid == self.active_id and self._focused_pane == 0: return
+        threading.Thread(target=_blop_sound, daemon=True).start()
         # If the session is visible in a split pane, focus that pane
         for i in range(self._num_panes):
             if self._pane_ids[i] == tid:
