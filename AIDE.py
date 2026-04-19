@@ -115,7 +115,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.15.0"
+VERSION      = "2.15.1"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -302,6 +302,9 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.15.1": [
+        ("🚀", "Auto-advance settles on working terminal", "After replying to all waiting terminals, focus automatically moves to the next terminal where Claude is actively working — so you're already there when it finishes"),
+    ],
     "2.15.0": [
         ("🚀", "Uber mode", "Click 🚀 Uber in the toolbar to enable auto-focus: whenever Claude asks you a question in any terminal, AIDE immediately jumps to that pane or tab — no manual switching needed"),
     ],
@@ -4353,10 +4356,17 @@ class AIDEWindow(QMainWindow):
         ids = list(self.sessions.keys())
         if self.active_id not in ids: return
         cur = ids.index(self.active_id)
-        # Search from cur+1 wrapping around, skip current
+        # First pass: find the next terminal waiting for input
         for i in range(1, len(ids)):
             tid = ids[(cur + i) % len(ids)]
             if tid != self.active_id and getattr(self.sessions[tid], "waiting_input", False):
+                QTimer.singleShot(200, lambda t=tid: self._switch_to(t))
+                return
+        # No waiting terminal found — settle on the next one that is working/thinking
+        for i in range(1, len(ids)):
+            tid = ids[(cur + i) % len(ids)]
+            s = self.sessions[tid]
+            if tid != self.active_id and (getattr(s, "claude_working", False) or getattr(s, "claude_thinking", False)):
                 QTimer.singleShot(200, lambda t=tid: self._switch_to(t))
                 return
 
