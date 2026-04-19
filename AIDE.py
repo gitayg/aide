@@ -115,7 +115,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.15.4"
+VERSION      = "2.15.5"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -329,6 +329,9 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.15.5": [
+        ("▌", "Cursor block always visible", "The text cursor now renders as a solid blue block even when positioned on an empty cell, so you can always see where you are while typing or navigating"),
+    ],
     "2.15.4": [
         ("📍", "Cursor position in status bar", "The bottom status bar now shows the terminal cursor row:col (e.g. 5:32) so you can see exactly where the text cursor is while editing"),
     ],
@@ -1634,11 +1637,22 @@ class TerminalWidget(QWidget):
                         Qt.AlignmentFlag.AlignLeft|Qt.AlignmentFlag.AlignVCenter, c)
                 x=x2
 
-        # unfocused cursor outline (only when not scrolled back)
-        if not scrolled and not focused and cur_y<screen.lines and cur_x<screen.columns:
-            painter.setPen(QPen(C_CURSOR,1))
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRect(cur_x*self._cw,cur_y*self._ch,self._cw-1,self._ch-1)
+        # cursor (only when not scrolled back)
+        if not scrolled and cur_y<screen.lines and cur_x<screen.columns:
+            if focused:
+                # filled block cursor — draw explicitly so it shows on empty cells too
+                painter.fillRect(cur_x*self._cw,cur_y*self._ch,self._cw,self._ch,C_CURSOR)
+                row=self._get_row(cur_y)
+                ch=row.get(cur_x) if isinstance(row,dict) else row[cur_x]
+                if ch and ch.data and ch.data!=" ":
+                    painter.setFont(self._font_b if ch.bold else self._font_n)
+                    painter.setPen(C_BG)
+                    painter.drawText(QRect(cur_x*self._cw,cur_y*self._ch,self._cw,self._ch),
+                                     Qt.AlignmentFlag.AlignLeft|Qt.AlignmentFlag.AlignVCenter,ch.data)
+            else:
+                painter.setPen(QPen(C_CURSOR,1))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawRect(cur_x*self._cw,cur_y*self._ch,self._cw-1,self._ch-1)
 
         # selection highlight
         sel_s, sel_e = self._sel_norm()
