@@ -115,7 +115,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.16.1"
+VERSION      = "2.16.2"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -329,6 +329,9 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.16.2": [
+        ("⚡", "Further CPU reduction", "Card refresh state guard now correctly skips idle sessions: gear_tick/blink_phase only update and count toward state when the session is actually animating; idle cards produce a stable state tuple and skip Qt refresh entirely. PTY select timeout 50ms→100ms; event poll 50ms→100ms."),
+    ],
     "2.16.1": [
         ("⚡", "CPU usage reduction", "Terminal tick 33ms→50ms; hidden terminals skip repaint; split-pane header setText/setStyleSheet guarded against no-op calls; status bar setText guarded; all cut idle CPU significantly"),
     ],
@@ -1200,7 +1203,7 @@ class TermSession:
                     data=self._proc.stdout.read(4096)
                     if not data: break
                 else:
-                    r,_,_=select.select([self.master_fd],[],[],0.05)
+                    r,_,_=select.select([self.master_fd],[],[],0.1)
                     if not r: continue
                     data=os.read(self.master_fd,16384)
                     if not data: break
@@ -2589,7 +2592,9 @@ class TabBar(QWidget):
         if not c: return
         s = c.session
         state = (s.claude_thinking, s.claude_working, s.waiting_input,
-                 c._blink_phase, c._gear_tick, s.info.cwd, s.info.last_cmd,
+                 c._blink_phase if s.waiting_input else False,
+                 c._gear_tick if (s.claude_thinking or s.claude_working) else 0,
+                 s.info.cwd, s.info.last_cmd,
                  s.custom_title, c._unread, c._active)
         if not force and getattr(c, "_last_state", None) == state: return
         c._last_state = state
@@ -3731,7 +3736,7 @@ class AIDEWindow(QMainWindow):
         self._start_dashboard()
         self._hotkey_bar.set_btn_active("toggle_notes", self._notes_vis)
         self._hotkey_bar.set_btn_active("toggle_uber", self.config.uber_mode)
-        for interval,fn in [(50,self._process_events),(1000,self._check_idle),
+        for interval,fn in [(100,self._process_events),(1000,self._check_idle),
                              (500,self._refresh_cards),(30000,self._save_session),
                              (5000,self._check_for_update)]:
             t=QTimer(self); t.timeout.connect(fn); t.start(interval)
@@ -4391,8 +4396,10 @@ class AIDEWindow(QMainWindow):
         for tid,s in self.sessions.items():
             card=self._tab_bar._card_map.get(tid)
             if card:
-                card._blink_phase=self._blink_phase
-                card._gear_tick=getattr(card,"_gear_tick",0)+1
+                if s.waiting_input:
+                    card._blink_phase=self._blink_phase
+                if s.claude_thinking or s.claude_working:
+                    card._gear_tick=getattr(card,"_gear_tick",0)+1
                 card.mark_visible(tid in split_ids)
             self._tab_bar.refresh_card(tid)
         self._update_waiting_badge()
