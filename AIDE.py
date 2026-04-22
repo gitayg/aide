@@ -115,7 +115,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.16.0"
+VERSION      = "2.16.1"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -329,6 +329,9 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.16.1": [
+        ("⚡", "CPU usage reduction", "Terminal tick 33ms→50ms; hidden terminals skip repaint; split-pane header setText/setStyleSheet guarded against no-op calls; status bar setText guarded; all cut idle CPU significantly"),
+    ],
     "2.16.0": [
         ("⚡", "Performance improvements", "Removed per-chunk os.path.exists() debug syscall; scrollback buffer reduced from 10,000 to 2,000 rows (80% less memory per session); card refreshes now skipped when nothing changed, cutting Qt repaints by ~90% in idle sessions"),
     ],
@@ -1488,7 +1491,7 @@ class TerminalWidget(QWidget):
         self._sel_end:   Optional[tuple] = None
         self._selecting = False
 
-        t = QTimer(self); t.timeout.connect(self._tick); t.start(33)
+        t = QTimer(self); t.timeout.connect(self._tick); t.start(50)
 
     def set_session(self, s:Optional[TermSession]):
         self.session=s; self._sel_start=None; self._sel_end=None
@@ -1536,7 +1539,7 @@ class TerminalWidget(QWidget):
         return "\n".join(lines)
 
     def _tick(self):
-        if self.session and self.session.dirty:
+        if self.session and self.session.dirty and self.isVisible():
             self.session.dirty=False
             self._update_scrollbar()
             self.update()
@@ -4238,9 +4241,12 @@ class AIDEWindow(QMainWindow):
             hdr.setVisible(visible)
             if visible:
                 sess = term.session
-                lbl.setText(_label(sess, _shortcuts[i]))
-                lbl.setStyleSheet(_lbl_style(sess, i == self._focused_pane))
-                hdr.setStyleSheet(_hdr_style(sess, i == self._focused_pane))
+                new_text  = _label(sess, _shortcuts[i])
+                new_lsty  = _lbl_style(sess, i == self._focused_pane)
+                new_hsty  = _hdr_style(sess, i == self._focused_pane)
+                if lbl.text() != new_text:   lbl.setText(new_text)
+                if lbl.styleSheet() != new_lsty: lbl.setStyleSheet(new_lsty)
+                if hdr.styleSheet() != new_hsty: hdr.setStyleSheet(new_hsty)
 
     def _on_focus_changed(self, _old, new):
         """Track which split pane last received keyboard focus."""
@@ -4395,8 +4401,9 @@ class AIDEWindow(QMainWindow):
         if s:
             full=s.info.cwd_full or s.info.cwd
             cur = s.screen.cursor
-            pos_str = f"  {cur.y+1}:{cur.x+1}"
-            self._cwd_bar.setText((f"📁  {full}" if full else "") + pos_str)
+            new_cwd = (f"📁  {full}" if full else "") + f"  {cur.y+1}:{cur.x+1}"
+            if self._cwd_bar.text() != new_cwd:
+                self._cwd_bar.setText(new_cwd)
 
     def _update_waiting_badge(self):
         count=sum(1 for s in self.sessions.values() if getattr(s,"waiting_input",False))
