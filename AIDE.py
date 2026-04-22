@@ -115,7 +115,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.16.3"
+VERSION      = "2.16.4"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -329,6 +329,9 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.16.4": [
+        ("🔔", "Fix false waiting notifications from shell prompts", "╭─/╰─ box detection now requires ≥3 box-drawing chars. Powerline/Starship shell prompts that draw '╭─ user@host' and '╰─ $' no longer trigger false waiting alerts — Claude Code's real box borders are always full-width lines of dashes."),
+    ],
     "2.16.3": [
         ("🔔", "Reliable waiting detection", "╭─ box-open now tracked as a signal that Claude is active — ╰─ box-close triggers the waiting notification even when no braille spinner was detected (e.g. different Claude Code builds). Spinner detection still used when available."),
     ],
@@ -1136,8 +1139,8 @@ class TermSession:
     _SPINNER_CHARS = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
     _THINKING_RE = re.compile(rf'[{_SPINNER_CHARS}][^\n]*[Tt]hinking')
     _WORKING_RE  = re.compile(rf'[{_SPINNER_CHARS}]')
-    _DONE_RE     = re.compile(r'╰[─━]')
-    _START_RE    = re.compile(r'╭[─━]')
+    _DONE_RE     = re.compile(r'╰[─━]{3,}')
+    _START_RE    = re.compile(r'╭[─━]{3,}')
     # Safety-net decay: if no spinner arrives within this window, assume Claude finished.
     # 3 s is long enough to survive slow tool calls but short enough to feel responsive.
     _AI_IDLE_SECS = 3.0
