@@ -115,7 +115,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.16.2"
+VERSION      = "2.16.3"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -329,6 +329,9 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.16.3": [
+        ("🔔", "Reliable waiting detection", "╭─ box-open now tracked as a signal that Claude is active — ╰─ box-close triggers the waiting notification even when no braille spinner was detected (e.g. different Claude Code builds). Spinner detection still used when available."),
+    ],
     "2.16.2": [
         ("⚡", "Further CPU reduction", "Card refresh state guard now correctly skips idle sessions: gear_tick/blink_phase only update and count toward state when the session is actually animating; idle cards produce a stable state tuple and skip Qt refresh entirely. PTY select timeout 50ms→100ms; event poll 50ms→100ms."),
     ],
@@ -1157,6 +1160,7 @@ class TermSession:
         self.waiting_input=False; self.scroll_offset=0; self.last_ping_time:float=0.0; self.last_waiting_at:float=0.0
         self.claude_resume_cmd:str=""; self.claude_working:bool=False; self.claude_thinking:bool=False
         self._ai_active_time:float=0.0   # last time working/thinking was detected
+        self._in_response_box:bool=False  # True between ╭─ and ╰─
         self._thread:Optional[threading.Thread]=None
 
     def start(self, shell:str, env_overrides:Optional[Dict[str,str]]=None)->None:
@@ -1231,18 +1235,19 @@ class TermSession:
             self.claude_working=True; self.claude_thinking=False
             self.waiting_input=False
             self._ai_active_time=time.time(); _had_spinner=True
-        # ╭─ box opening: transition thinking→working
-        if not _had_spinner and self._START_RE.search(text) and self.claude_thinking:
-            self.claude_thinking=False; self.claude_working=True
+        # ╭─ box opening: transition thinking→working; also marks entry into a response box
+        if self._START_RE.search(text):
+            self._in_response_box=True
             self._ai_active_time=time.time()
+            if not _had_spinner and self.claude_thinking:
+                self.claude_thinking=False; self.claude_working=True
         # ╰─ box closing: Claude finished its response.
-        # Start the 300 ms debounce timer whenever ╰─ fires after any activity
-        # (_was_active: active before this chunk; _had_spinner: became active IN this chunk).
-        # The timer only fires the notification if waiting_input is still True at that point
-        # — an intermediate tool-result box will have been followed by a new spinner within
-        # 300 ms which clears waiting_input, so no false alert fires.
-        _was_active = self.claude_working or self.claude_thinking
+        # _was_active covers all signals: spinner, thinking→working transition, or ╭─ box-open.
+        # The 300 ms debounce only fires notification if waiting_input is still True at that
+        # point — intermediate tool-result boxes get a new spinner within 300 ms which clears it.
+        _was_active = self.claude_working or self.claude_thinking or self._in_response_box
         if self._DONE_RE.search(text):
+            self._in_response_box=False
             self.claude_working=False; self.claude_thinking=False
             if _was_active or _had_spinner:
                 self.waiting_input=True
