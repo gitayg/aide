@@ -115,7 +115,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.15.8"
+VERSION      = "2.15.9"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -329,6 +329,9 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.15.9": [
+        ("🔍", "Fix waiting detection for fast responses", "When Claude's spinner and the ╰─ box-close arrive in the same PTY chunk, the waiting transition was incorrectly skipped. Fixed by starting the 300 ms debounce timer whenever ╰─ fires after any activity. Added a 3 s idle fallback: if no spinner arrives for 3 s while Claude was working, automatically transition to waiting"),
+    ],
     "2.15.8": [
         ("🔍", "Fixed working + waiting detection", "Working: any braille spinner char now triggers the working state (previous regex required following text that cursor-movement codes prevented matching). Waiting: detected via the ╰─ response-box closing border with a 300 ms debounce so intermediate tool-result boxes don't fire false alerts — 'Human:' pattern removed since Claude Code CLI never outputs it"),
     ],
@@ -1123,8 +1126,9 @@ class TermSession:
     _WORKING_RE  = re.compile(rf'[{_SPINNER_CHARS}]')
     _DONE_RE     = re.compile(r'╰[─━]')
     _START_RE    = re.compile(r'╭[─━]')
-    # Safety-net decay: clear flags if no spinner arrives for this many seconds.
-    _AI_IDLE_SECS = 10.0
+    # Safety-net decay: if no spinner arrives within this window, assume Claude finished.
+    # 3 s is long enough to survive slow tool calls but short enough to feel responsive.
+    _AI_IDLE_SECS = 3.0
     _URL_RE   = re.compile(r"https?://(?:localhost|127\.0\.0\.1):(\d+\S*)")
     _TAIL_LEN = 3000
 
@@ -1229,13 +1233,15 @@ class TermSession:
             self.claude_thinking=False; self.claude_working=True
             self._ai_active_time=time.time()
         # ╰─ box closing: Claude finished its response.
-        # If we were active and no new spinner came in the same chunk, schedule a
-        # waiting transition — delayed 300 ms so that intermediate tool-result boxes
-        # (which are immediately followed by another spinner) don't fire false alerts.
+        # Start the 300 ms debounce timer whenever ╰─ fires after any activity
+        # (_was_active: active before this chunk; _had_spinner: became active IN this chunk).
+        # The timer only fires the notification if waiting_input is still True at that point
+        # — an intermediate tool-result box will have been followed by a new spinner within
+        # 300 ms which clears waiting_input, so no false alert fires.
         _was_active = self.claude_working or self.claude_thinking
         if self._DONE_RE.search(text):
             self.claude_working=False; self.claude_thinking=False
-            if _was_active and not _had_spinner:
+            if _was_active or _had_spinner:
                 self.waiting_input=True
                 self.last_ping_time=time.time(); self.last_waiting_at=self.last_ping_time
                 threading.Timer(0.3, self._fire_wait_events).start()
@@ -4351,6 +4357,11 @@ class AIDEWindow(QMainWindow):
             if (s.claude_working or s.claude_thinking) and s._ai_active_time>0:
                 if now - s._ai_active_time >= TermSession._AI_IDLE_SECS:
                     s.claude_working=False; s.claude_thinking=False
+                    if not s.waiting_input:
+                        s.waiting_input=True
+                        s.last_ping_time=now; s.last_waiting_at=now
+                        _EVENT_Q.put(("blink",s.tab_id,"Claude is waiting"))
+                        _EVENT_Q.put(("notif",s.tab_id,"Claude is waiting",s._output_tail))
                     needs_refresh=True
         if needs_refresh:
             self._refresh_cards()
