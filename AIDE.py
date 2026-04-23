@@ -117,7 +117,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.18.0"
+VERSION      = "2.18.1"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -271,8 +271,9 @@ def _macos_notify(title: str, msg: str):
 
 
 class SplitBallOverlay(QWidget):
-    """Animates a ping-pong ball flying from one split pane to the other."""
-    _FRAMES = 22
+    """Animates a ping-pong ball flying from one split pane to the other.
+    With an optional label (used for neural messages), renders text next
+    to the ball and extends the duration."""
     _RADIUS = 7
     _ARC    = 35   # pixels — how high the ball arcs above the straight line
 
@@ -280,48 +281,89 @@ class SplitBallOverlay(QWidget):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self._pos   = QPointF(0, 0)
-        self._frame = self._FRAMES  # starts hidden
+        self._frame = 0
+        self._total = 0
         self._start = QPointF(0, 0)
         self._end   = QPointF(0, 0)
+        self._label = ""
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._step)
 
-    def launch(self, start: QPointF, end: QPointF):
+    def launch(self, start: QPointF, end: QPointF,
+               label: str = "", duration_ms: int = 308):
         self._start = start
         self._end   = end
+        self._label = label
+        interval    = 25  # 40 fps
+        self._total = max(1, duration_ms // interval)
         self._frame = 0
         self.setGeometry(self.parent().rect())
         self.show(); self.raise_()
-        self._timer.start(14)   # ~70 fps
+        self._timer.start(interval)
 
     def _step(self):
         self._frame += 1
-        if self._frame >= self._FRAMES:
+        if self._frame >= self._total:
             self._timer.stop(); self.hide(); return
         self.update()
 
     def paintEvent(self, ev):
         import math
-        if self._frame >= self._FRAMES: return
-        t  = self._frame / self._FRAMES
+        if self._frame >= self._total: return
+        t  = self._frame / self._total
         x  = self._start.x() + (self._end.x() - self._start.x()) * t
         y  = (self._start.y() + (self._end.y() - self._start.y()) * t
               - self._ARC * math.sin(math.pi * t))
-        alpha = int(255 * (1 - t * 0.2))
+        # Fade in over first 10% and fade out over last 15%
+        fade = 1.0
+        if t < 0.1:       fade = t / 0.1
+        elif t > 0.85:    fade = (1.0 - t) / 0.15
+        alpha = int(255 * fade)
         r = self._RADIUS
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         # Shadow
-        p.setBrush(QColor(0, 0, 0, 60))
+        p.setBrush(QColor(0, 0, 0, int(60 * fade)))
         p.setPen(Qt.PenStyle.NoPen)
         p.drawEllipse(int(x - r + 2), int(y - r + 2), r * 2, r * 2)
-        # Ball body
-        p.setBrush(QColor(255, 220, 50, alpha))
+        # Ball body — accent color for neural, yellow for plain paste
+        if self._label:
+            p.setBrush(QColor(C_ACCENT.red(), C_ACCENT.green(), C_ACCENT.blue(), alpha))
+        else:
+            p.setBrush(QColor(255, 220, 50, alpha))
         p.drawEllipse(int(x - r), int(y - r), r * 2, r * 2)
         # Highlight
-        p.setBrush(QColor(255, 255, 200, alpha // 2))
+        p.setBrush(QColor(255, 255, 255, alpha // 2))
         p.drawEllipse(int(x - r // 2), int(y - r), r, r)
+        # Label bubble
+        if self._label:
+            f = QFont(FONT_FAMILY); f.setPointSize(10); f.setBold(True)
+            p.setFont(f)
+            fm = p.fontMetrics()
+            text = self._label
+            pad_x, pad_y = 8, 4
+            tw = fm.horizontalAdvance(text)
+            th = fm.height()
+            bw = tw + pad_x * 2
+            bh = th + pad_y * 2
+            # Place the bubble above the ball
+            bx = int(x - bw / 2)
+            by = int(y - r - bh - 4)
+            # Keep on-screen
+            bx = max(4, min(bx, self.width() - bw - 4))
+            by = max(4, by)
+            # Bubble background
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(17, 17, 27, int(230 * fade)))  # C_BG with alpha
+            p.drawRoundedRect(bx, by, bw, bh, 6, 6)
+            # Border
+            p.setPen(QPen(QColor(C_ACCENT.red(), C_ACCENT.green(), C_ACCENT.blue(),
+                                 int(200 * fade)), 1))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRoundedRect(bx, by, bw, bh, 6, 6)
+            # Text
+            p.setPen(QPen(QColor(C_FG.red(), C_FG.green(), C_FG.blue(), alpha)))
+            p.drawText(bx + pad_x, by + pad_y + fm.ascent(), text)
         p.end()
 
 
@@ -331,6 +373,9 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.18.1": [
+        ("💬", "Neural animation shows the message blurb", "The ball flying between panes now carries a speech-bubble with the first line of the message (up to 60 chars). Animation lasts 1.6s with fade-in/out so you can read what's being sent."),
+    ],
     "2.18.0": [
         ("🚀", "Neural messages delivered immediately", "No more AIDE approval queue. Messages sent with `neural send` are delivered instantly and appear in the target terminal as '# 🤖 neural from [sender]: …'. Any human approval is handled by Claude Code's own tool-permission prompts in-context."),
         ("🏓", "Neural split-pane animation", "When the sender and receiver are both visible in split panes, the ping-pong ball animation flies between them on every neural message."),
@@ -4501,11 +4546,12 @@ class AIDEWindow(QMainWindow):
             if not s or not s.alive: continue
             payload = f"# 🤖 neural from [{sender_name}]: {safe}\n"
             s.write(payload.encode("utf-8"))
-            self._animate_neural(from_sid, tid)
+            self._animate_neural(from_sid, tid, content)
         self._neural_panel.notify_new_message()
 
-    def _animate_neural(self, from_sid: int, to_sid: int):
-        """If both sender and receiver are in visible panes, fly a ball between them."""
+    def _animate_neural(self, from_sid: int, to_sid: int, content: str = ""):
+        """If both sender and receiver are in visible panes, fly a ball between them
+        with a short blurb of the message content. Duration 1.5s minimum."""
         src_idx = dst_idx = -1
         for i in range(self._num_panes):
             if self._pane_ids[i] == from_sid: src_idx = i
@@ -4514,7 +4560,11 @@ class AIDEWindow(QMainWindow):
         src_w = self._terminals[src_idx]; dst_w = self._terminals[dst_idx]
         src_c = src_w.mapTo(self, src_w.rect().center())
         dst_c = dst_w.mapTo(self, dst_w.rect().center())
-        self._ball_overlay.launch(QPointF(src_c), QPointF(dst_c))
+        # Short blurb: first line, truncated
+        blurb = content.strip().splitlines()[0] if content.strip() else "neural"
+        if len(blurb) > 60: blurb = blurb[:57] + "…"
+        self._ball_overlay.launch(QPointF(src_c), QPointF(dst_c),
+                                  label=f"🤖 {blurb}", duration_ms=1600)
         threading.Thread(target=_blop_sound, daemon=True).start()
 
     def _action_toggle_neural(self):
