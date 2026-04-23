@@ -137,7 +137,8 @@ class _PendingCard(QFrame):
 class NeuralPanel(QWidget):
     """Side panel showing registered agents and pending inter-agent messages."""
 
-    approval_made = pyqtSignal(str, bool)  # (msg_id, approved)
+    # (msg_id, approved, to_session_id, from_name, content)
+    approval_made = pyqtSignal(str, bool, int, str, str)
 
     def __init__(self, bus: NeuralBus, parent=None):
         super().__init__(parent)
@@ -204,12 +205,23 @@ class NeuralPanel(QWidget):
         self._agents_area.setWidget(self._agents_inner)
         root.addWidget(self._agents_area, 1)
 
+        # ── agent onboarding prompt ───────────────────────────────────────────
+        copy_btn = QPushButton("📋  Copy agent prompt")
+        copy_btn.setStyleSheet(
+            f"QPushButton{{background:{_C_SURFACE.name()};color:{_C_FG.name()};"
+            f"border:none;border-radius:3px;font-size:10px;padding:4px 8px;}}"
+            f"QPushButton:hover{{background:{_C_ACCENT.name()}44;color:{_C_ACCENT.name()};}}")
+        copy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        copy_btn.clicked.connect(self._copy_agent_prompt)
+        root.addWidget(copy_btn)
+
         # ── refresh timer ─────────────────────────────────────────────────────
         self._timer = QTimer(self)
         self._timer.timeout.connect(self.refresh)
         self._timer.start(1500)
 
         self._known_pending: set = set()
+        self._url = ""  # set by MainWindow after bus starts
 
     # ── public ────────────────────────────────────────────────────────────────
 
@@ -267,12 +279,82 @@ class NeuralPanel(QWidget):
                               a.role, a.task, a.last_seen)
             self._agents_lay.insertWidget(self._agents_lay.count() - 1, card)
 
+    def set_url(self, url: str):
+        self._url = url
+
     def _on_approve(self, msg_id: str):
+        # Capture details before approving (approve changes status)
+        pending = {p["id"]: p for p in self._bus.get_pending()}
+        p = pending.get(msg_id, {})
         self._bus.approve(msg_id)
-        self.approval_made.emit(msg_id, True)
+        to_sid   = 0
+        from_name = p.get("from_name", "")
+        content   = p.get("content", "")
+        # Resolve to_session_id from bus internals
+        with self._bus._lock:
+            for m in self._bus._messages:
+                if m.id == msg_id:
+                    to_sid = m.to_session; break
+        self.approval_made.emit(msg_id, True, to_sid, from_name, content)
         self.refresh()
 
     def _on_deny(self, msg_id: str):
         self._bus.deny(msg_id)
-        self.approval_made.emit(msg_id, False)
+        self.approval_made.emit(msg_id, False, -1, "", "")
         self.refresh()
+
+    def _copy_agent_prompt(self):
+        from PyQt6.QtWidgets import QApplication as _App
+        url = self._url or "http://127.0.0.1:<port>"
+        prompt = f"""\
+## Neural Bus — Agent Operating Instructions
+
+You are an AI agent running inside AIDE, connected to the Neural Bus.
+The Neural Bus lets agents working on different tasks coordinate with each other.
+All messages you send to other agents require human approval before delivery.
+
+### Your environment
+- `AIDE_NEURAL_URL={url}` — the bus HTTP endpoint
+- `AIDE_SESSION_ID` — your session number (check with: echo $AIDE_SESSION_ID)
+- The `neural` command is on your PATH
+
+### On startup
+Run this to announce yourself:
+```
+neural register "<your role name>" "<what you are working on>"
+```
+Example: `neural register "AppHub Agent" "Deploying auth service"`
+
+### Discovering other agents
+```
+neural agents
+```
+This lists all registered agents with their session IDs, tags, app, role, and current task.
+
+### Sending a message
+```
+neural send <session_id> "<message>"
+```
+The human will see an approval prompt. If approved, the message is delivered.
+Use this when you need information from another agent, want to coordinate work,
+or need to flag a dependency or conflict.
+
+### Updating your task
+```
+neural task "<what you are doing now>"
+```
+Keep this current so other agents know your status.
+
+### Checking your inbox
+```
+neural inbox
+```
+Read messages that have been approved and delivered to you.
+
+### Guidelines
+- Only send messages when genuinely necessary for coordination.
+- Be concise — the human reads every message before approving it.
+- If you receive a message (shown in your terminal), acknowledge it and respond via `neural send`.
+- Do not use the bus for routine status updates; use it for cross-agent decisions.
+"""
+        _App.clipboard().setText(prompt)

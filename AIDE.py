@@ -117,7 +117,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.17.3"
+VERSION      = "2.17.4"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -331,6 +331,9 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.17.4": [
+        ("📋", "Neural agent prompt", "Neural panel now has a 'Copy agent prompt' button that copies a full Claude operating-instructions prompt to clipboard — paste it at the start of any agent session to onboard it to the Neural Bus."),
+    ],
     "2.17.3": [
         ("🤖", "Neural registration with full agent profile", "Join Neural Bus dialog now collects tag, app, role, and current task. Agent cards in the Neural panel show all fields. Borg-ship 🤖 icon used throughout."),
     ],
@@ -3974,6 +3977,7 @@ class AIDEWindow(QMainWindow):
         self._notes_panel.vault_lock_requested.connect(self._on_vault_lock_requested)
         self._notes_panel.github_token_changed.connect(self._on_gh_token_selected)
         self._neural_panel=NeuralPanel(self._neural_bus)
+        self._neural_panel.set_url(f"http://127.0.0.1:{self._neural_port}")
         self._neural_panel.setVisible(False)
         self._main_splitter=QSplitter(Qt.Orientation.Horizontal)
         self._main_splitter.setHandleWidth(3)
