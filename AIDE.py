@@ -117,7 +117,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.17.5"
+VERSION      = "2.17.6"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -331,6 +331,9 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.17.6": [
+        ("🤖", "Neural bus state persists across restarts", "Agent registrations (name, tag, app, role, task) are saved with the session and automatically restored when AIDE restarts — no need to rejoin the bus manually."),
+    ],
     "2.17.5": [
         ("🔔", "Detect Claude tool-permission prompts", "Claude Code's numbered choice prompts ('Do you want to proceed? 1. Yes…  Esc to cancel') now trigger the waiting notification — they have no ╰─ border so were previously missed entirely."),
     ],
@@ -1185,7 +1188,8 @@ class TermSession:
         self.claude_resume_cmd:str=""; self.claude_working:bool=False; self.claude_thinking:bool=False
         self._ai_active_time:float=0.0   # last time working/thinking was detected
         self._in_response_box:bool=False  # True between ╭─ and ╰─
-        self.neural_on_bus:bool=False     # registered with Neural bus
+        self.neural_on_bus:bool=False      # registered with Neural bus
+        self._neural_profile:Optional[dict]=None  # {name,tag,app,role,task}
         self._thread:Optional[threading.Thread]=None
 
     def start(self, shell:str, env_overrides:Optional[Dict[str,str]]=None)->None:
@@ -1417,12 +1421,15 @@ class TermSession:
     def to_dict(self)->dict:
         # NB: variables are NEVER persisted here — they live encrypted in the
         # SecureVault (VAULT_FILE). Only keep them in memory on this object.
-        return dict(custom_title=self.custom_title,notes=self.notes,tasks=self.tasks,tags=self.tags,
-                    autostart_dir=self.autostart_dir,autostart_cmd=self.autostart_cmd,
-                    github_token_name=self.github_token_name,
-                    browser_url=self.browser_url,watching=self.watching,
-                    cwd=self.info.cwd_full or self.info.cwd,
-                    ssh_host=self.info.ssh_host,last_cmd=self.info.last_cmd)
+        d = dict(custom_title=self.custom_title,notes=self.notes,tasks=self.tasks,tags=self.tags,
+                 autostart_dir=self.autostart_dir,autostart_cmd=self.autostart_cmd,
+                 github_token_name=self.github_token_name,
+                 browser_url=self.browser_url,watching=self.watching,
+                 cwd=self.info.cwd_full or self.info.cwd,
+                 ssh_host=self.info.ssh_host,last_cmd=self.info.last_cmd)
+        if self.neural_on_bus and self._neural_profile:
+            d["neural"] = self._neural_profile
+        return d
 
     @classmethod
     def from_dict(cls,d:dict,tab_id:int)->"TermSession":
@@ -1434,7 +1441,9 @@ class TermSession:
         stored_cwd=d.get("cwd","")
         s.info.cwd_full=stored_cwd
         s.info.cwd=_shorten_path(stored_cwd) if stored_cwd else "~"
-        s.info.ssh_host=d.get("ssh_host",""); s.info.last_cmd=d.get("last_cmd",""); return s
+        s.info.ssh_host=d.get("ssh_host",""); s.info.last_cmd=d.get("last_cmd","")
+        s._neural_profile = d.get("neural", None)  # restored in MainWindow after bus starts
+        return s
 
 # ═════════════════════════════════════════════════════════════════════════════
 # SCREENSHOT OVERLAY
@@ -4492,7 +4501,7 @@ class AIDEWindow(QMainWindow):
         if not s: return
         if s.neural_on_bus:
             self._neural_bus.unregister(tid)
-            s.neural_on_bus = False
+            s.neural_on_bus = False; s._neural_profile = None
             self._tab_bar.refresh_card(tid, force=True)
         else:
             dlg = NeuralRegisterDialog(s, self)
@@ -4501,7 +4510,7 @@ class AIDEWindow(QMainWindow):
             if not r: return
             task = "  |  ".join(filter(None, [r["app"], r["role"], r["task"]]))
             self._neural_bus.register(tid, r["name"], task, extras=r)
-            s.neural_on_bus = True
+            s.neural_on_bus = True; s._neural_profile = r
             self._tab_bar.refresh_card(tid, force=True)
             if not self._neural_vis:
                 self._neural_vis = True
@@ -5137,6 +5146,13 @@ class AIDEWindow(QMainWindow):
             except Exception as e:
                 _log_err(f"tab {k} load failed: {e}")
         _log(f"loaded {len(self.sessions)} sessions total")
+        # Restore Neural bus registrations
+        for tid, s in self.sessions.items():
+            p = getattr(s, "_neural_profile", None)
+            if p:
+                task = "  |  ".join(filter(None, [p.get("app",""), p.get("role",""), p.get("task","")]))
+                self._neural_bus.register(tid, p.get("name", s.effective_title()), task, extras=p)
+                s.neural_on_bus = True
         active=data.get("active",-1)
         target=active if active in self.sessions else (next(iter(self.sessions)) if self.sessions else -1)
         if target>=0: self._switch_to(target)
