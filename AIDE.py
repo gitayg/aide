@@ -117,7 +117,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.17.4"
+VERSION      = "2.17.5"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -331,6 +331,9 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.17.5": [
+        ("🔔", "Detect Claude tool-permission prompts", "Claude Code's numbered choice prompts ('Do you want to proceed? 1. Yes…  Esc to cancel') now trigger the waiting notification — they have no ╰─ border so were previously missed entirely."),
+    ],
     "2.17.4": [
         ("📋", "Neural agent prompt", "Neural panel now has a 'Copy agent prompt' button that copies a full Claude operating-instructions prompt to clipboard — paste it at the start of any agent session to onboard it to the Neural Bus."),
     ],
@@ -1144,8 +1147,9 @@ _ANSI_RE = re.compile(r'(\x9B|\x1B\[)[0-?]*[ -\/]*[@-~]|\x1b[@-_]|\x1b[NOP]')
 class TermSession:
     _AI_PATS = [
         (re.compile(r"\[y/n\]|\[Y/n\]|\[yes/no\]",re.I), "Waiting for confirmation"),
-        (re.compile(r"Press any key",re.I),         "Waiting for keypress"),
-        (re.compile(r">>>\s*$",re.M),               "Python REPL waiting"),
+        (re.compile(r"Press any key",re.I),               "Waiting for keypress"),
+        (re.compile(r">>>\s*$",re.M),                     "Python REPL waiting"),
+        (re.compile(r"Esc to cancel"),                    "Claude is waiting for your choice"),
     ]
     # Claude CLI spinner detection.
     # _THINKING_RE: braille char + anything on same line + "Thinking" — handles all ANSI variants.
