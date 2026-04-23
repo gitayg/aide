@@ -49,20 +49,36 @@ def _ts(t: float) -> str:
 # ── individual cards ──────────────────────────────────────────────────────────
 
 class _AgentCard(QFrame):
-    def __init__(self, name: str, session_id: int, task: str, last_seen: float,
-                 parent=None):
+    def __init__(self, name: str, session_id: int, tag: str, app: str,
+                 role: str, task: str, last_seen: float, parent=None):
         super().__init__(parent)
         self.setStyleSheet(_CARD_SS)
         lay = QVBoxLayout(self); lay.setContentsMargins(8, 6, 8, 6); lay.setSpacing(2)
 
         hdr = QHBoxLayout(); hdr.setSpacing(4)
-        name_lbl = QLabel(f"⬡ {name}")
+        name_lbl = QLabel(f"🤖 {name}")
         name_lbl.setStyleSheet(f"color:{_C_FG.name()};font-weight:bold;font-size:11px;"
                                f"background:transparent;")
         sid_lbl = QLabel(f"[{session_id}]")
         sid_lbl.setStyleSheet(_MUTED_SS)
         hdr.addWidget(name_lbl); hdr.addStretch(); hdr.addWidget(sid_lbl)
         lay.addLayout(hdr)
+
+        meta_parts = []
+        if tag:  meta_parts.append(f"[{tag}]")
+        if app:  meta_parts.append(app)
+        if meta_parts:
+            meta_lbl = QLabel("  ".join(meta_parts))
+            meta_lbl.setStyleSheet(f"color:{_C_ACCENT.name()};font-size:10px;"
+                                   f"background:transparent;")
+            lay.addWidget(meta_lbl)
+
+        if role:
+            role_lbl = QLabel(role)
+            role_lbl.setStyleSheet(f"color:{_C_MUTED.name()};font-size:10px;"
+                                   f"background:transparent;")
+            role_lbl.setWordWrap(True)
+            lay.addWidget(role_lbl)
 
         if task:
             task_lbl = QLabel(task)
@@ -135,7 +151,7 @@ class NeuralPanel(QWidget):
 
         # ── header ────────────────────────────────────────────────────────────
         hdr = QHBoxLayout(); hdr.setSpacing(6)
-        title = QLabel("🧠  Neural")
+        title = QLabel("🤖  Neural")
         title.setStyleSheet(_HDR_SS)
         self._badge = QLabel("0")
         self._badge.setStyleSheet(
@@ -247,7 +263,8 @@ class NeuralPanel(QWidget):
 
         self._no_agents.setVisible(len(agents) == 0)
         for a in agents:
-            card = _AgentCard(a.name, a.session_id, a.task, a.last_seen)
+            card = _AgentCard(a.name, a.session_id, a.tag, a.app,
+                              a.role, a.task, a.last_seen)
             self._agents_lay.insertWidget(self._agents_lay.count() - 1, card)
 
     def _on_approve(self, msg_id: str):

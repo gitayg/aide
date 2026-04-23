@@ -25,6 +25,9 @@ class NeuralAgent:
     name: str
     task: str
     token: str
+    tag:  str = ""
+    app:  str = ""
+    role: str = ""
     registered_at: float = field(default_factory=time.time)
     last_seen: float    = field(default_factory=time.time)
 
@@ -118,13 +121,16 @@ class NeuralBus:
 
     # ── agent management ──────────────────────────────────────────────────────
 
-    def register(self, session_id: int, name: str, task: str) -> str:
+    def register(self, session_id: int, name: str, task: str,
+                 extras: Optional[Dict] = None) -> str:
         with self._lock:
             old = self._by_session.get(session_id)
             if old: self._agents.pop(old, None)
             token = uuid.uuid4().hex
-            self._agents[token] = NeuralAgent(session_id=session_id, name=name,
-                                               task=task, token=token)
+            e = extras or {}
+            self._agents[token] = NeuralAgent(
+                session_id=session_id, name=name, task=task, token=token,
+                tag=e.get("tag", ""), app=e.get("app", ""), role=e.get("role", ""))
             self._by_session[session_id] = token
         return token
 
@@ -141,8 +147,8 @@ class NeuralBus:
     def list_agents(self, token: str) -> List[dict]:
         with self._lock:
             return [
-                {"session_id": a.session_id, "name": a.name,
-                 "task": a.task, "last_seen": a.last_seen}
+                {"session_id": a.session_id, "name": a.name, "tag": a.tag,
+                 "app": a.app, "role": a.role, "task": a.task, "last_seen": a.last_seen}
                 for t, a in self._agents.items() if t != token
             ]
 

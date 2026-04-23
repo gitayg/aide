@@ -117,7 +117,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.17.2"
+VERSION      = "2.17.3"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -331,6 +331,9 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.17.3": [
+        ("🤖", "Neural registration with full agent profile", "Join Neural Bus dialog now collects tag, app, role, and current task. Agent cards in the Neural panel show all fields. Borg-ship 🤖 icon used throughout."),
+    ],
     "2.17.2": [
         ("🧠", "Right-click to join/leave Neural Bus", "Right-clicking a terminal card in the sidebar shows 'Join Neural Bus' or 'Leave Neural Bus'. Joining prompts for agent name and task; the ⬡ icon appears on the card while connected. Neural panel opens automatically on join."),
     ],
@@ -2143,8 +2146,8 @@ class TabCard(QFrame):
             self._icon_lbl.setStyleSheet(f"color:{C_ACCENT.name()};font-size:14px;font-weight:bold;background:transparent;")
         else:
             if s.neural_on_bus:
-                self._icon_lbl.setText("⬡")
-                self._icon_lbl.setStyleSheet(f"color:{C_MUTED.name()};font-size:10px;background:transparent;")
+                self._icon_lbl.setText("🤖")
+                self._icon_lbl.setStyleSheet(f"font-size:10px;background:transparent;")
             else:
                 self._icon_lbl.setText("")
                 self._icon_lbl.setStyleSheet("background:transparent;")
@@ -2743,7 +2746,7 @@ class HotkeyBar(QWidget):
         ("🔔","Notifs","configure_notifs","^B-s"),
         ("🃏","Cards","configure_cards","^B-c"),
         ("🚀","Uber","toggle_uber","^B-u"),
-        ("🧠","Neural","toggle_neural","^B-n"),
+        ("🤖","Neural","toggle_neural","^B-n"),
         ("📖","Neural?","neural_help",""),
     ]
 
@@ -3367,6 +3370,52 @@ def _dlg_ss():
 
 def _primary_btn(btn):
     btn.setStyleSheet(f"QPushButton{{background:{C_ACCENT.name()};color:#000;font-weight:bold;border:none;border-radius:4px;padding:6px 14px;}}QPushButton:hover{{background:{C_ACCENT.name()}cc;}}")
+
+class NeuralRegisterDialog(QDialog):
+    """Multi-field dialog for joining the Neural bus."""
+    def __init__(self, session: "TermSession", parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("🧠  Join Neural Bus")
+        self.setStyleSheet(_dlg_ss()); self.setFixedWidth(420)
+        self._result = None
+        lay = QVBoxLayout(self); lay.setSpacing(10); lay.setContentsMargins(20, 20, 20, 20)
+        lay.addWidget(QLabel("Register this terminal as a Neural agent.\nOther agents will see these details.",
+                             styleSheet=f"color:{C_MUTED.name()};font-size:11px;"))
+        lay.addSpacing(4)
+        form = QFormLayout(); form.setSpacing(8); form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        self._name  = QLineEdit(session.effective_title()); self._name.setPlaceholderText("e.g. Frontend Agent")
+        self._tag   = QLineEdit(", ".join(session.tags) if session.tags else "")
+        self._tag.setPlaceholderText("e.g. ui, auth")
+        self._app   = QLineEdit(); self._app.setPlaceholderText("e.g. nanoai, myapp")
+        self._role  = QLineEdit(); self._role.setPlaceholderText("e.g. Implements UI components")
+        self._task  = QLineEdit(); self._task.setPlaceholderText("e.g. Building the login page")
+        form.addRow("Name:", self._name)
+        form.addRow("Tag:", self._tag)
+        form.addRow("App:", self._app)
+        form.addRow("Role:", self._role)
+        form.addRow("Current task:", self._task)
+        lay.addLayout(form)
+        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        _primary_btn(bb.button(QDialogButtonBox.StandardButton.Ok))
+        bb.accepted.connect(self._ok); bb.rejected.connect(self.reject)
+        lay.addWidget(bb)
+        self._name.returnPressed.connect(self._ok)
+
+    def _ok(self):
+        name = self._name.text().strip()
+        if not name: return
+        self._result = {
+            "name": name,
+            "tag":  self._tag.text().strip(),
+            "app":  self._app.text().strip(),
+            "role": self._role.text().strip(),
+            "task": self._task.text().strip(),
+        }
+        self.accept()
+
+    def get_result(self) -> Optional[dict]:
+        return self._result
+
 
 def _ver_tuple(v: str):
     """Convert "2.1.0" → (2, 1, 0) for comparison."""
@@ -4438,17 +4487,12 @@ class AIDEWindow(QMainWindow):
             s.neural_on_bus = False
             self._tab_bar.refresh_card(tid, force=True)
         else:
-            from PyQt6.QtWidgets import QInputDialog
-            name, ok = QInputDialog.getText(
-                self, "🧠 Join Neural Bus",
-                f"Agent name for this terminal:",
-                text=s.effective_title())
-            if not ok or not name.strip(): return
-            task, ok2 = QInputDialog.getText(
-                self, "🧠 Join Neural Bus",
-                "Current task (optional):", text="")
-            if not ok2: return
-            self._neural_bus.register(tid, name.strip(), task.strip())
+            dlg = NeuralRegisterDialog(s, self)
+            if dlg.exec() != QDialog.DialogCode.Accepted: return
+            r = dlg.get_result()
+            if not r: return
+            task = "  |  ".join(filter(None, [r["app"], r["role"], r["task"]]))
+            self._neural_bus.register(tid, r["name"], task, extras=r)
             s.neural_on_bus = True
             self._tab_bar.refresh_card(tid, force=True)
             if not self._neural_vis:
@@ -4458,7 +4502,7 @@ class AIDEWindow(QMainWindow):
 
     def _action_neural_help(self):
         url = f"http://127.0.0.1:{self._neural_port}"
-        QMessageBox.information(self, "🧠  Neural — Agent Communication",
+        QMessageBox.information(self, "🤖  Neural — Agent Communication",
             f"Neural lets Claude Code agents talk to each other.\n"
             f"All messages require your approval before delivery.\n\n"
             f"Bus URL (auto-injected):  AIDE_NEURAL_URL={url}\n\n"
