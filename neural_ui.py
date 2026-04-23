@@ -92,53 +92,32 @@ class _AgentCard(QFrame):
         lay.addWidget(seen_lbl)
 
 
-class _PendingCard(QFrame):
-    approved = pyqtSignal(str)
-    denied   = pyqtSignal(str)
-
-    def __init__(self, msg_id: str, from_name: str, to_name: str,
-                 content: str, timestamp: float, parent=None):
+class _MessageCard(QFrame):
+    """Recent neural message (display-only; no approval buttons)."""
+    def __init__(self, from_name: str, to_name: str, content: str,
+                 timestamp: float, parent=None):
         super().__init__(parent)
-        self.msg_id = msg_id
         self.setStyleSheet(f"background:{_C_BG.name()};"
-                           f"border:1px solid {_C_ACCENT.name()}44;"
                            f"border-left:3px solid {_C_ACCENT.name()};"
                            f"border-radius:4px;")
-        lay = QVBoxLayout(self); lay.setContentsMargins(8, 6, 8, 6); lay.setSpacing(4)
-
-        # header: from → to
+        lay = QVBoxLayout(self); lay.setContentsMargins(8, 6, 8, 6); lay.setSpacing(2)
         hdr = QLabel(f"{from_name}  →  {to_name}")
         hdr.setStyleSheet(f"color:{_C_ACCENT.name()};font-size:10px;font-weight:bold;"
                           f"background:transparent;")
         lay.addWidget(hdr)
-
         msg_lbl = QLabel(content)
         msg_lbl.setStyleSheet(f"color:{_C_FG.name()};font-size:11px;background:transparent;")
         msg_lbl.setWordWrap(True)
         lay.addWidget(msg_lbl)
-
         ts_lbl = QLabel(_ts(timestamp))
         ts_lbl.setStyleSheet(_MUTED_SS)
         lay.addWidget(ts_lbl)
-
-        btns = QHBoxLayout(); btns.setSpacing(6)
-        approve_btn = QPushButton("✓ Allow"); approve_btn.setStyleSheet(_APPROVE_SS)
-        deny_btn    = QPushButton("✗ Deny");  deny_btn.setStyleSheet(_DENY_SS)
-        approve_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        deny_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        approve_btn.clicked.connect(lambda: self.approved.emit(msg_id))
-        deny_btn.clicked.connect(lambda: self.denied.emit(msg_id))
-        btns.addWidget(approve_btn); btns.addWidget(deny_btn); btns.addStretch()
-        lay.addLayout(btns)
 
 
 # ── main panel ────────────────────────────────────────────────────────────────
 
 class NeuralPanel(QWidget):
-    """Side panel showing registered agents and pending inter-agent messages."""
-
-    # (msg_id, approved, to_session_id, from_name, content)
-    approval_made = pyqtSignal(str, bool, int, str, str)
+    """Side panel showing registered agents and recent neural messages."""
 
     def __init__(self, bus: NeuralBus, parent=None):
         super().__init__(parent)
@@ -154,35 +133,33 @@ class NeuralPanel(QWidget):
         hdr = QHBoxLayout(); hdr.setSpacing(6)
         title = QLabel("🤖  Neural")
         title.setStyleSheet(_HDR_SS)
-        self._badge = QLabel("0")
-        self._badge.setStyleSheet(
-            f"background:{_C_ACCENT.name()};color:#000;font-size:10px;"
-            f"font-weight:bold;border-radius:7px;padding:1px 6px;min-width:14px;")
-        self._badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._badge.setVisible(False)
-        hdr.addWidget(title); hdr.addWidget(self._badge); hdr.addStretch()
+        hdr.addWidget(title); hdr.addStretch()
         root.addLayout(hdr)
 
-        # ── pending approvals ─────────────────────────────────────────────────
-        self._pending_hdr = QLabel("Pending approval")
-        self._pending_hdr.setStyleSheet(_HDR_SS + "font-size:10px;")
-        self._pending_hdr.setVisible(False)
-        root.addWidget(self._pending_hdr)
+        info = QLabel("Messages are delivered immediately — the receiving "
+                      "agent's Claude Code handles any approval itself.")
+        info.setStyleSheet(_MUTED_SS); info.setWordWrap(True)
+        root.addWidget(info)
 
-        self._pending_area = QScrollArea()
-        self._pending_area.setWidgetResizable(True)
-        self._pending_area.setStyleSheet("QScrollArea{border:none;background:transparent;}")
-        self._pending_area.setSizePolicy(QSizePolicy.Policy.Expanding,
-                                         QSizePolicy.Policy.Preferred)
-        self._pending_area.setVisible(False)
-        self._pending_inner = QWidget()
-        self._pending_inner.setStyleSheet("background:transparent;")
-        self._pending_lay = QVBoxLayout(self._pending_inner)
-        self._pending_lay.setContentsMargins(0, 0, 0, 0)
-        self._pending_lay.setSpacing(4)
-        self._pending_lay.addStretch()
-        self._pending_area.setWidget(self._pending_inner)
-        root.addWidget(self._pending_area)
+        # ── recent messages ───────────────────────────────────────────────────
+        msgs_hdr = QLabel("Recent messages")
+        msgs_hdr.setStyleSheet(_HDR_SS + "font-size:10px;")
+        root.addWidget(msgs_hdr)
+
+        self._msgs_area = QScrollArea()
+        self._msgs_area.setWidgetResizable(True)
+        self._msgs_area.setStyleSheet("QScrollArea{border:none;background:transparent;}")
+        self._msgs_inner = QWidget()
+        self._msgs_inner.setStyleSheet("background:transparent;")
+        self._msgs_lay = QVBoxLayout(self._msgs_inner)
+        self._msgs_lay.setContentsMargins(0, 0, 0, 0)
+        self._msgs_lay.setSpacing(4)
+        self._no_msgs = QLabel("No messages yet.")
+        self._no_msgs.setStyleSheet(_MUTED_SS + "padding:4px;")
+        self._msgs_lay.addWidget(self._no_msgs)
+        self._msgs_lay.addStretch()
+        self._msgs_area.setWidget(self._msgs_inner)
+        root.addWidget(self._msgs_area)
 
         # ── agents list ───────────────────────────────────────────────────────
         agents_hdr = QLabel("Registered agents")
@@ -220,59 +197,42 @@ class NeuralPanel(QWidget):
         self._timer.timeout.connect(self.refresh)
         self._timer.start(1500)
 
-        self._known_pending: set = set()
         self._url = ""  # set by MainWindow after bus starts
+        self._seen_msg_ids: set = set()
 
     # ── public ────────────────────────────────────────────────────────────────
 
-    def notify_new_request(self):
-        """Called when a new message arrives for approval."""
+    def notify_new_message(self):
+        """Called whenever a new message is delivered (triggers immediate refresh)."""
         self.refresh()
 
     def refresh(self):
-        self._refresh_pending()
+        self._refresh_messages()
         self._refresh_agents()
 
     # ── internals ─────────────────────────────────────────────────────────────
 
-    def _refresh_pending(self):
-        pending = self._bus.get_pending()
-        ids = {p["id"] for p in pending}
-
-        # Remove cards whose messages are no longer pending
-        for i in range(self._pending_lay.count() - 1, -1, -1):
-            item = self._pending_lay.itemAt(i)
+    def _refresh_messages(self):
+        msgs = self._bus.recent_messages(limit=20)
+        # Full rebuild — small list, simpler than diffing
+        for i in range(self._msgs_lay.count() - 1, -1, -1):
+            item = self._msgs_lay.itemAt(i)
             w = item.widget() if item else None
-            if isinstance(w, _PendingCard) and w.msg_id not in ids:
-                self._pending_lay.takeAt(i)
-                w.deleteLater()
-
-        # Add new cards
-        existing = {w.msg_id for i in range(self._pending_lay.count())
-                    if isinstance((w := self._pending_lay.itemAt(i).widget()), _PendingCard)}
-        for p in pending:
-            if p["id"] not in existing:
-                card = _PendingCard(p["id"], p["from_name"], p["to_name"],
-                                    p["content"], p["timestamp"])
-                card.approved.connect(self._on_approve)
-                card.denied.connect(self._on_deny)
-                self._pending_lay.insertWidget(self._pending_lay.count() - 1, card)
-
-        n = len(pending)
-        self._pending_hdr.setVisible(n > 0)
-        self._pending_area.setVisible(n > 0)
-        self._badge.setText(str(n)); self._badge.setVisible(n > 0)
+            if isinstance(w, _MessageCard):
+                self._msgs_lay.takeAt(i); w.deleteLater()
+        self._no_msgs.setVisible(len(msgs) == 0)
+        for m in reversed(msgs):  # newest first
+            card = _MessageCard(m["from_name"], m["to_name"],
+                                m["content"], m["timestamp"])
+            self._msgs_lay.insertWidget(0, card)
 
     def _refresh_agents(self):
         agents = self._bus.all_agents()
-
-        # Remove all agent cards and rebuild (list is small)
         for i in range(self._agents_lay.count() - 1, -1, -1):
             item = self._agents_lay.itemAt(i)
             w = item.widget() if item else None
             if isinstance(w, _AgentCard):
                 self._agents_lay.takeAt(i); w.deleteLater()
-
         self._no_agents.setVisible(len(agents) == 0)
         for a in agents:
             card = _AgentCard(a.name, a.session_id, a.tag, a.app,
@@ -282,27 +242,6 @@ class NeuralPanel(QWidget):
     def set_url(self, url: str):
         self._url = url
 
-    def _on_approve(self, msg_id: str):
-        # Capture details before approving (approve changes status)
-        pending = {p["id"]: p for p in self._bus.get_pending()}
-        p = pending.get(msg_id, {})
-        self._bus.approve(msg_id)
-        to_sid   = 0
-        from_name = p.get("from_name", "")
-        content   = p.get("content", "")
-        # Resolve to_session_id from bus internals
-        with self._bus._lock:
-            for m in self._bus._messages:
-                if m.id == msg_id:
-                    to_sid = m.to_session; break
-        self.approval_made.emit(msg_id, True, to_sid, from_name, content)
-        self.refresh()
-
-    def _on_deny(self, msg_id: str):
-        self._bus.deny(msg_id)
-        self.approval_made.emit(msg_id, False, -1, "", "")
-        self.refresh()
-
     def _copy_agent_prompt(self):
         from PyQt6.QtWidgets import QApplication as _App
         url = self._url or "http://127.0.0.1:<port>"
@@ -311,7 +250,12 @@ class NeuralPanel(QWidget):
 
 You are an AI agent running inside AIDE, connected to the Neural Bus.
 The Neural Bus lets agents working on different tasks coordinate with each other.
-All messages you send to other agents require human approval before delivery.
+
+Messages you send to other agents are **delivered immediately** — there is
+no human approval queue. Whenever the human needs to approve an action you
+take, Claude Code's own tool-permission prompts handle that at the point
+of action (e.g. before you run a command or edit a file). The bus itself
+is a trusted communication channel between agents.
 
 ### Your environment
 - `AIDE_NEURAL_URL={url}` — the bus HTTP endpoint
@@ -329,15 +273,15 @@ Example: `neural register "AppHub Agent" "Deploying auth service"`
 ```
 neural agents
 ```
-This lists all registered agents with their session IDs, tags, app, role, and current task.
+Lists all registered agents with their session IDs, tags, app, role, and current task.
 
 ### Sending a message
 ```
 neural send <session_id> "<message>"
 ```
-The human will see an approval prompt. If approved, the message is delivered.
-Use this when you need information from another agent, want to coordinate work,
-or need to flag a dependency or conflict.
+Delivered immediately to the target agent's terminal. Use this when you
+need information from another agent, want to coordinate work, or need to
+flag a dependency or conflict.
 
 ### Updating your task
 ```
@@ -345,16 +289,16 @@ neural task "<what you are doing now>"
 ```
 Keep this current so other agents know your status.
 
-### Checking your inbox
-```
-neural inbox
-```
-Read messages that have been approved and delivered to you.
+### Receiving messages
+Incoming messages appear directly in your terminal output as a line
+prefixed with `# 🤖 neural from [<sender>]:`. You will see them on your
+next read of the terminal. You can also run `neural inbox` to see any
+messages you missed.
 
 ### Guidelines
 - Only send messages when genuinely necessary for coordination.
-- Be concise — the human reads every message before approving it.
-- If you receive a message (shown in your terminal), acknowledge it and respond via `neural send`.
+- Be concise.
+- When you receive a message, acknowledge it and respond via `neural send`.
 - Do not use the bus for routine status updates; use it for cross-agent decisions.
 """
         _App.clipboard().setText(prompt)

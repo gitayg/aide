@@ -39,7 +39,7 @@ class NeuralMessage:
     to_session:   int   = -1  # -1 = broadcast
     content:      str   = ""
     timestamp:    float = field(default_factory=time.time)
-    status:       str   = "pending"  # pending | approved | denied | delivered
+    status:       str   = "delivered"  # delivered | read
 
 
 # ── Bus ──────────────────────────────────────────────────────────────────────
@@ -47,11 +47,11 @@ class NeuralMessage:
 class NeuralBus:
     """HTTP message bus. Call start() to bind a port and return it."""
 
-    def __init__(self, on_request: Callable[[NeuralMessage], None]):
+    def __init__(self, on_message: Callable[[NeuralMessage], None]):
         self._agents:     Dict[str, NeuralAgent]   = {}  # token → agent
         self._by_session: Dict[int, str]            = {}  # session_id → token
         self._messages:   List[NeuralMessage]       = []
-        self._on_request  = on_request
+        self._on_message  = on_message
         self._lock        = threading.RLock()
         self._server: Optional[HTTPServer] = None
         self.port: int = 0
@@ -159,6 +159,8 @@ class NeuralBus:
     # ── messaging ─────────────────────────────────────────────────────────────
 
     def send(self, token: str, to_session_id: int, content: str) -> Optional[str]:
+        """Immediately delivers the message. The receiving agent's Claude Code
+        handles any approval UX itself via its own tool-permission prompts."""
         with self._lock:
             agent = self._agents.get(token)
             if not agent: return None
@@ -169,42 +171,20 @@ class NeuralBus:
                                 content=content)
             self._messages.append(msg)
             agent.last_seen = time.time()
-        self._on_request(msg)
+        self._on_message(msg)
         return msg.id
 
-    def approve(self, msg_id: str):
+    def sender_name(self, session_id: int) -> str:
         with self._lock:
-            for m in self._messages:
-                if m.id == msg_id: m.status = "approved"; break
+            for a in self._agents.values():
+                if a.session_id == session_id: return a.name
+            return f"Session {session_id}"
 
-    def deny(self, msg_id: str):
-        with self._lock:
-            for m in self._messages:
-                if m.id == msg_id: m.status = "denied"; break
-
-    def get_inbox(self, token: str) -> List[dict]:
-        with self._lock:
-            a = self._agents.get(token)
-            if not a: return []
-            result = []
-            for m in self._messages:
-                if m.status != "approved": continue
-                if m.to_session != a.session_id and m.to_session != -1: continue
-                m.status = "delivered"
-                sender = next((x for x in self._agents.values()
-                               if x.session_id == m.from_session), None)
-                result.append({"id": m.id,
-                               "from": sender.name if sender else f"Session {m.from_session}",
-                               "content": m.content,
-                               "timestamp": m.timestamp})
-        return result
-
-    def get_pending(self) -> List[dict]:
-        """Snapshot of all pending messages for the approval UI."""
+    def recent_messages(self, limit: int = 20) -> List[dict]:
+        """All recent messages for the panel history view."""
         with self._lock:
             out = []
-            for m in self._messages:
-                if m.status != "pending": continue
+            for m in self._messages[-limit:]:
                 sender = next((a for a in self._agents.values()
                                if a.session_id == m.from_session), None)
                 target = next((a for a in self._agents.values()
@@ -219,6 +199,24 @@ class NeuralBus:
                     "timestamp": m.timestamp,
                 })
         return out
+
+    def get_inbox(self, token: str) -> List[dict]:
+        """Unread messages for an agent (backup for when PTY injection misses)."""
+        with self._lock:
+            a = self._agents.get(token)
+            if not a: return []
+            result = []
+            for m in self._messages:
+                if m.status == "read": continue
+                if m.to_session != a.session_id and m.to_session != -1: continue
+                m.status = "read"
+                sender = next((x for x in self._agents.values()
+                               if x.session_id == m.from_session), None)
+                result.append({"id": m.id,
+                               "from": sender.name if sender else f"Session {m.from_session}",
+                               "content": m.content,
+                               "timestamp": m.timestamp})
+        return result
 
 
 # ── Client script ─────────────────────────────────────────────────────────────
@@ -282,14 +280,14 @@ def _send(a):
     t = _tok()
     if not t: sys.exit("Not registered.")
     r = _req("POST", "/send", {"token": t, "to": int(a[0]), "content": a[1]})
-    print(f"Message queued (id: {r['id']}) — awaiting human approval")
+    print(f"Message delivered (id: {r['id']})")
 
 def _broadcast(a):
     if not a: sys.exit('Usage: neural broadcast "<message>"')
     t = _tok()
     if not t: sys.exit("Not registered.")
     r = _req("POST", "/send", {"token": t, "to": -1, "content": a[0]})
-    print(f"Broadcast queued (id: {r['id']}) — awaiting human approval")
+    print(f"Broadcast delivered (id: {r['id']})")
 
 def _inbox(_):
     t = _tok()

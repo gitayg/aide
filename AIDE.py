@@ -117,7 +117,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.17.6"
+VERSION      = "2.18.0"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -331,6 +331,11 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.18.0": [
+        ("🚀", "Neural messages delivered immediately", "No more AIDE approval queue. Messages sent with `neural send` are delivered instantly and appear in the target terminal as '# 🤖 neural from [sender]: …'. Any human approval is handled by Claude Code's own tool-permission prompts in-context."),
+        ("🏓", "Neural split-pane animation", "When the sender and receiver are both visible in split panes, the ping-pong ball animation flies between them on every neural message."),
+        ("📜", "Neural panel shows message history", "The 'Pending approval' queue is replaced with 'Recent messages' — a live list of the last 20 neural messages with sender → target and content."),
+    ],
     "2.17.6": [
         ("🤖", "Neural bus state persists across restarts", "Agent registrations (name, tag, app, role, task) are saved with the session and automatically restored when AIDE restarts — no need to rejoin the bus manually."),
     ],
@@ -4445,8 +4450,8 @@ class AIDEWindow(QMainWindow):
             try: ev=_EVENT_Q.get_nowait()
             except queue.Empty: break
             if ev[0]=="notif": self._show_notif(ev[1],ev[2],ev[3])
-            elif ev[0]=="neural_request":
-                self._on_neural_request_ui()
+            elif ev[0]=="neural_msg":
+                self._on_neural_delivered(ev[1], ev[2], ev[3])
             elif ev[0]=="blink":
                 QApplication.alert(self,3000)
                 if self.config.uber_mode:
@@ -4479,17 +4484,38 @@ class AIDEWindow(QMainWindow):
             self._notif_banner.show_msg(full,self.config.notif.auto_dismiss_sec)
 
     def _on_neural_request(self, msg):
-        """Called from NeuralBus thread — marshal to main thread via event queue."""
-        _EVENT_Q.put(("neural_request", msg.id))
+        """Called from NeuralBus thread. Marshal to main thread with full payload."""
+        _EVENT_Q.put(("neural_msg", msg.from_session, msg.to_session, msg.content))
 
-    def _on_neural_request_ui(self):
-        """Called on main thread when a neural message needs approval."""
-        if not self._neural_vis:
-            self._neural_vis = True
-            self._neural_panel.setVisible(True)
-            self._hotkey_bar.set_btn_active("toggle_neural", True)
-        self._neural_panel.notify_new_request()
-        threading.Thread(target=play_sound, args=(self.config.notif,), daemon=True).start()
+    def _on_neural_delivered(self, from_sid: int, to_sid: int, content: str):
+        """Called on main thread when a neural message is delivered.
+        Injects it into the target terminal's PTY and animates the ball
+        if both agents are in visible panes."""
+        sender_name = self._neural_bus.sender_name(from_sid)
+        targets = [to_sid] if to_sid != -1 else [
+            s.tab_id for s in self.sessions.values() if s.neural_on_bus and s.tab_id != from_sid
+        ]
+        safe = content.replace("\n", "\n# ")
+        for tid in targets:
+            s = self.sessions.get(tid)
+            if not s or not s.alive: continue
+            payload = f"# 🤖 neural from [{sender_name}]: {safe}\n"
+            s.write(payload.encode("utf-8"))
+            self._animate_neural(from_sid, tid)
+        self._neural_panel.notify_new_message()
+
+    def _animate_neural(self, from_sid: int, to_sid: int):
+        """If both sender and receiver are in visible panes, fly a ball between them."""
+        src_idx = dst_idx = -1
+        for i in range(self._num_panes):
+            if self._pane_ids[i] == from_sid: src_idx = i
+            if self._pane_ids[i] == to_sid:   dst_idx = i
+        if src_idx < 0 or dst_idx < 0 or src_idx == dst_idx: return
+        src_w = self._terminals[src_idx]; dst_w = self._terminals[dst_idx]
+        src_c = src_w.mapTo(self, src_w.rect().center())
+        dst_c = dst_w.mapTo(self, dst_w.rect().center())
+        self._ball_overlay.launch(QPointF(src_c), QPointF(dst_c))
+        threading.Thread(target=_blop_sound, daemon=True).start()
 
     def _action_toggle_neural(self):
         self._neural_vis = not self._neural_vis
@@ -4521,7 +4547,8 @@ class AIDEWindow(QMainWindow):
         url = f"http://127.0.0.1:{self._neural_port}"
         QMessageBox.information(self, "🤖  Neural — Agent Communication",
             f"Neural lets Claude Code agents talk to each other.\n"
-            f"All messages require your approval before delivery.\n\n"
+            f"Messages are delivered immediately — any human approval\n"
+            f"happens via Claude Code's own tool-permission prompts.\n\n"
             f"Bus URL (auto-injected):  AIDE_NEURAL_URL={url}\n\n"
             f"Commands available in every AIDE terminal:\n\n"
             f"  neural register \"<name>\" \"<task>\"\n"
@@ -4532,12 +4559,12 @@ class AIDEWindow(QMainWindow):
             f"      List all other registered agents and their tasks.\n\n"
             f"  neural send <session_id> \"<message>\"\n"
             f"      Send a message to a specific agent.\n"
-            f"      (Appears in the 🧠 panel for your approval.)\n\n"
+            f"      Appears as '# 🤖 neural from [<you>]: …' in their terminal.\n\n"
             f"  neural broadcast \"<message>\"\n"
             f"      Send a message to all agents.\n\n"
             f"  neural inbox\n"
-            f"      Read approved messages sent to you.\n\n"
-            f"Toggle the Neural panel:  🧠 Neural button  or  ^B-n")
+            f"      Read any messages you missed.\n\n"
+            f"Toggle the Neural panel:  🤖 Neural button  or  ^B-n")
 
     def _check_idle(self):
         now=time.time()
