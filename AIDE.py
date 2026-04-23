@@ -117,7 +117,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.17.1"
+VERSION      = "2.17.2"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -331,6 +331,9 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.17.2": [
+        ("🧠", "Right-click to join/leave Neural Bus", "Right-clicking a terminal card in the sidebar shows 'Join Neural Bus' or 'Leave Neural Bus'. Joining prompts for agent name and task; the ⬡ icon appears on the card while connected. Neural panel opens automatically on join."),
+    ],
     "2.17.1": [
         ("📖", "Neural help button", "Added 📖 Neural? button to ribbon — shows all neural commands and the bus URL at a glance."),
     ],
@@ -1172,6 +1175,7 @@ class TermSession:
         self.claude_resume_cmd:str=""; self.claude_working:bool=False; self.claude_thinking:bool=False
         self._ai_active_time:float=0.0   # last time working/thinking was detected
         self._in_response_box:bool=False  # True between ╭─ and ╰─
+        self.neural_on_bus:bool=False     # registered with Neural bus
         self._thread:Optional[threading.Thread]=None
 
     def start(self, shell:str, env_overrides:Optional[Dict[str,str]]=None)->None:
@@ -2062,6 +2066,7 @@ class TabCard(QFrame):
     rename_requested=pyqtSignal(int)
     close_requested=pyqtSignal(int)
     reorder_requested=pyqtSignal(int,int,bool)  # src_tab_id, target_tab_id, place_before
+    neural_toggle_requested=pyqtSignal(int)     # tab_id
 
     _MIME_TYPE="application/x-aide-tab"
 
@@ -2137,8 +2142,12 @@ class TabCard(QFrame):
             self._icon_lbl.setText("?" if getattr(self,"_blink_phase",False) else " ")
             self._icon_lbl.setStyleSheet(f"color:{C_ACCENT.name()};font-size:14px;font-weight:bold;background:transparent;")
         else:
-            self._icon_lbl.setText("")
-            self._icon_lbl.setStyleSheet("background:transparent;")
+            if s.neural_on_bus:
+                self._icon_lbl.setText("⬡")
+                self._icon_lbl.setStyleSheet(f"color:{C_MUTED.name()};font-size:10px;background:transparent;")
+            else:
+                self._icon_lbl.setText("")
+                self._icon_lbl.setStyleSheet("background:transparent;")
         # Title label: tags (accent, optional) + title text
         _acc = C_ACCENT.name()
         show_tags = getattr(self.cfg, "show_tags", True)
@@ -2263,6 +2272,10 @@ class TabCard(QFrame):
             act.triggered.connect(self._mark_unread)
         menu.addSeparator()
         menu.addAction("Edit Tags…").triggered.connect(self._edit_tags)
+        menu.addSeparator()
+        neural_label = "🧠 Leave Neural Bus" if self.session.neural_on_bus else "🧠 Join Neural Bus"
+        menu.addAction(neural_label).triggered.connect(
+            lambda: self.neural_toggle_requested.emit(self.session.tab_id))
         menu.exec(e.globalPos())
 
     def _mark_unread(self):
@@ -2347,12 +2360,13 @@ class TabCard(QFrame):
 
 
 class TabBar(QWidget):
-    tab_selected       = pyqtSignal(int)
-    shift_tab_selected = pyqtSignal(int)
-    new_tab_clicked    = pyqtSignal()
-    rename_requested   = pyqtSignal(int)
-    close_requested    = pyqtSignal(int)
-    tabs_reordered     = pyqtSignal(list)
+    tab_selected           = pyqtSignal(int)
+    shift_tab_selected     = pyqtSignal(int)
+    new_tab_clicked        = pyqtSignal()
+    rename_requested       = pyqtSignal(int)
+    close_requested        = pyqtSignal(int)
+    tabs_reordered         = pyqtSignal(list)
+    neural_toggle_requested= pyqtSignal(int)
 
     # sort modes: "tag" = alphabetical by first tag, "recent" = last waiting_at desc
     SORT_TAG    = "tag"
@@ -2536,6 +2550,7 @@ class TabBar(QWidget):
         card.rename_requested.connect(self.rename_requested)
         card.close_requested.connect(self.close_requested)
         card.reorder_requested.connect(self._handle_reorder)
+        card.neural_toggle_requested.connect(self.neural_toggle_requested)
         self._card_map[s.tab_id] = card
         self._sessions[s.tab_id] = s
         self.rebuild_layout(self._sessions)
@@ -2611,7 +2626,7 @@ class TabBar(QWidget):
                  c._blink_phase if s.waiting_input else False,
                  c._gear_tick if (s.claude_thinking or s.claude_working) else 0,
                  s.info.cwd, s.info.last_cmd,
-                 s.custom_title, c._unread, c._active)
+                 s.custom_title, c._unread, c._active, s.neural_on_bus)
         if not force and getattr(c, "_last_state", None) == state: return
         c._last_state = state
         c.refresh()
@@ -3813,6 +3828,7 @@ class AIDEWindow(QMainWindow):
         self._tab_bar.rename_requested.connect(self._rename_tab_by_id)
         self._tab_bar.close_requested.connect(self._close_tab_with_confirm)
         self._tab_bar.tabs_reordered.connect(self._on_tabs_reordered)
+        self._tab_bar.neural_toggle_requested.connect(self._on_neural_toggle)
         self._sidebar_splitter=QSplitter(Qt.Orientation.Horizontal)
         self._sidebar_splitter.setHandleWidth(3)
         self._sidebar_splitter.setStyleSheet(f"QSplitter::handle{{background:{C_SURFACE.name()};}}QSplitter::handle:hover{{background:{C_ACCENT.name()}44;}}")
@@ -4413,6 +4429,32 @@ class AIDEWindow(QMainWindow):
         self._neural_vis = not self._neural_vis
         self._neural_panel.setVisible(self._neural_vis)
         self._hotkey_bar.set_btn_active("toggle_neural", self._neural_vis)
+
+    def _on_neural_toggle(self, tid: int):
+        s = self.sessions.get(tid)
+        if not s: return
+        if s.neural_on_bus:
+            self._neural_bus.unregister(tid)
+            s.neural_on_bus = False
+            self._tab_bar.refresh_card(tid, force=True)
+        else:
+            from PyQt6.QtWidgets import QInputDialog
+            name, ok = QInputDialog.getText(
+                self, "🧠 Join Neural Bus",
+                f"Agent name for this terminal:",
+                text=s.effective_title())
+            if not ok or not name.strip(): return
+            task, ok2 = QInputDialog.getText(
+                self, "🧠 Join Neural Bus",
+                "Current task (optional):", text="")
+            if not ok2: return
+            self._neural_bus.register(tid, name.strip(), task.strip())
+            s.neural_on_bus = True
+            self._tab_bar.refresh_card(tid, force=True)
+            if not self._neural_vis:
+                self._neural_vis = True
+                self._neural_panel.setVisible(True)
+                self._hotkey_bar.set_btn_active("toggle_neural", True)
 
     def _action_neural_help(self):
         url = f"http://127.0.0.1:{self._neural_port}"
