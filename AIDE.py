@@ -117,7 +117,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.17.0"
+VERSION      = "2.17.1"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -331,6 +331,9 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.17.1": [
+        ("📖", "Neural help button", "Added 📖 Neural? button to ribbon — shows all neural commands and the bus URL at a glance."),
+    ],
     "2.17.0": [
         ("🧠", "Neural message bus", "Agents (Claude Code sessions) can register with the Neural bus, announce their current task, and send messages to each other. All inter-agent communication requires human approval. Toggle panel via the 🧠 Neural button or ^B-n. Use the `neural` command in any terminal: neural register, neural agents, neural send, neural inbox."),
     ],
@@ -2726,6 +2729,7 @@ class HotkeyBar(QWidget):
         ("🃏","Cards","configure_cards","^B-c"),
         ("🚀","Uber","toggle_uber","^B-u"),
         ("🧠","Neural","toggle_neural","^B-n"),
+        ("📖","Neural?","neural_help",""),
     ]
 
     def __init__(self,parent=None):
@@ -4409,6 +4413,28 @@ class AIDEWindow(QMainWindow):
         self._neural_vis = not self._neural_vis
         self._neural_panel.setVisible(self._neural_vis)
         self._hotkey_bar.set_btn_active("toggle_neural", self._neural_vis)
+
+    def _action_neural_help(self):
+        url = f"http://127.0.0.1:{self._neural_port}"
+        QMessageBox.information(self, "🧠  Neural — Agent Communication",
+            f"Neural lets Claude Code agents talk to each other.\n"
+            f"All messages require your approval before delivery.\n\n"
+            f"Bus URL (auto-injected):  AIDE_NEURAL_URL={url}\n\n"
+            f"Commands available in every AIDE terminal:\n\n"
+            f"  neural register \"<name>\" \"<task>\"\n"
+            f"      Announce this agent to the bus.\n\n"
+            f"  neural task \"<what you're doing now>\"\n"
+            f"      Update your current task description.\n\n"
+            f"  neural agents\n"
+            f"      List all other registered agents and their tasks.\n\n"
+            f"  neural send <session_id> \"<message>\"\n"
+            f"      Send a message to a specific agent.\n"
+            f"      (Appears in the 🧠 panel for your approval.)\n\n"
+            f"  neural broadcast \"<message>\"\n"
+            f"      Send a message to all agents.\n\n"
+            f"  neural inbox\n"
+            f"      Read approved messages sent to you.\n\n"
+            f"Toggle the Neural panel:  🧠 Neural button  or  ^B-n")
 
     def _check_idle(self):
         now=time.time()
