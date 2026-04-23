@@ -107,6 +107,8 @@ except ImportError:
     _HAS_WEBENGINE = False
 
 from dashboard import DashboardServer, local_ip
+from neural import NeuralBus, write_client
+from neural_ui import NeuralPanel
 
 DASHBOARD_PORT = 8765
 GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
@@ -115,7 +117,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.16.4"
+VERSION      = "2.17.0"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -329,6 +331,9 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.17.0": [
+        ("🧠", "Neural message bus", "Agents (Claude Code sessions) can register with the Neural bus, announce their current task, and send messages to each other. All inter-agent communication requires human approval. Toggle panel via the 🧠 Neural button or ^B-n. Use the `neural` command in any terminal: neural register, neural agents, neural send, neural inbox."),
+    ],
     "2.16.4": [
         ("🔔", "Fix false waiting notifications from shell prompts", "╭─/╰─ box detection now requires ≥3 box-drawing chars. Powerline/Starship shell prompts that draw '╭─ user@host' and '╰─ $' no longer trigger false waiting alerts — Claude Code's real box borders are always full-width lines of dashes."),
     ],
@@ -2720,6 +2725,7 @@ class HotkeyBar(QWidget):
         ("🔔","Notifs","configure_notifs","^B-s"),
         ("🃏","Cards","configure_cards","^B-c"),
         ("🚀","Uber","toggle_uber","^B-u"),
+        ("🧠","Neural","toggle_neural","^B-n"),
     ]
 
     def __init__(self,parent=None):
@@ -3730,7 +3736,7 @@ class AIDEWindow(QMainWindow):
         self._focused_pane=0       # int index 0-5 — which pane last had keyboard focus
         self._num_panes=1          # number of visible panes (1-6)
         self._pane_ids=[-1,-1,-1,-1,-1,-1]  # session ID for each pane slot
-        self._notes_vis=True; self._last_notif:Optional[tuple]=None
+        self._notes_vis=True; self._neural_vis=False; self._last_notif:Optional[tuple]=None
         self._cb=SharedClipboard()
         self._vault=SecureVault()
         self._script_path=Path(sys.argv[0]).resolve()
@@ -3740,6 +3746,10 @@ class AIDEWindow(QMainWindow):
         self._show_screenshot_overlay=True  # only the first _switch_to (during session restore) gets the overlay
         self._ball_overlay=SplitBallOverlay(self)
         self._ball_overlay.hide()
+        self._neural_bus = NeuralBus(self._on_neural_request)
+        self._neural_port = self._neural_bus.start()
+        self._neural_client_dir = str(Path(sys.argv[0]).parent / "_neural_bin")
+        write_client(self._neural_client_dir)
         self._build_ui(); _build_keymap()
         self._start_dashboard()
         self._hotkey_bar.set_btn_active("toggle_notes", self._notes_vis)
@@ -3894,12 +3904,16 @@ class AIDEWindow(QMainWindow):
         self._notes_panel.vault_unlock_requested.connect(self._on_vault_unlock_requested)
         self._notes_panel.vault_lock_requested.connect(self._on_vault_lock_requested)
         self._notes_panel.github_token_changed.connect(self._on_gh_token_selected)
+        self._neural_panel=NeuralPanel(self._neural_bus)
+        self._neural_panel.setVisible(False)
         self._main_splitter=QSplitter(Qt.Orientation.Horizontal)
         self._main_splitter.setHandleWidth(3)
         self._main_splitter.setStyleSheet(f"QSplitter::handle{{background:{C_SURFACE.name()};}}")
         self._main_splitter.addWidget(term_area)
         self._main_splitter.addWidget(self._notes_panel)
+        self._main_splitter.addWidget(self._neural_panel)
         self._main_splitter.setStretchFactor(0,1); self._main_splitter.setStretchFactor(1,0)
+        self._main_splitter.setStretchFactor(2,0)
         self._sidebar_splitter.addWidget(self._main_splitter)
         self._sidebar_splitter.setStretchFactor(0,0); self._sidebar_splitter.setStretchFactor(1,1)
         self._sidebar_splitter.setSizes([220, 1060])
@@ -4041,8 +4055,11 @@ class AIDEWindow(QMainWindow):
 
     # ── tab lifecycle ──────────────────────────────────────────────────────────
     def _env_with_vars(self, session: "TermSession") -> dict:
-        """Merge config env_overrides, this session's GitHub token, and vault variables."""
+        """Merge config env_overrides, this session's GitHub token, vault variables, and neural bus."""
         env = dict(self.config.env_overrides)
+        env["AIDE_NEURAL_URL"]    = f"http://127.0.0.1:{self._neural_port}"
+        env["AIDE_SESSION_ID"]    = str(session.tab_id)
+        env["PATH"]               = f"{self._neural_client_dir}:{os.environ.get('PATH', '')}"
         # Inject this tab's GitHub token (env is set before autostart runs,
         # since autostart is sent as shell input after execvpe with env).
         name = getattr(session, "github_token_name", "")
@@ -4064,6 +4081,7 @@ class AIDEWindow(QMainWindow):
 
     def _close_tab(self,tid:int):
         if len(self.sessions)<=1: return
+        self._neural_bus.unregister(tid)
         self.sessions[tid].kill(); del self.sessions[tid]
         self._tab_bar.remove_card(tid)
         self._vault.drop_tab(tid)
@@ -4341,6 +4359,8 @@ class AIDEWindow(QMainWindow):
             try: ev=_EVENT_Q.get_nowait()
             except queue.Empty: break
             if ev[0]=="notif": self._show_notif(ev[1],ev[2],ev[3])
+            elif ev[0]=="neural_request":
+                self._on_neural_request_ui()
             elif ev[0]=="blink":
                 QApplication.alert(self,3000)
                 if self.config.uber_mode:
@@ -4371,6 +4391,24 @@ class AIDEWindow(QMainWindow):
         style=self.config.notif.style
         if style in ("banner","both"):
             self._notif_banner.show_msg(full,self.config.notif.auto_dismiss_sec)
+
+    def _on_neural_request(self, msg):
+        """Called from NeuralBus thread — marshal to main thread via event queue."""
+        _EVENT_Q.put(("neural_request", msg.id))
+
+    def _on_neural_request_ui(self):
+        """Called on main thread when a neural message needs approval."""
+        if not self._neural_vis:
+            self._neural_vis = True
+            self._neural_panel.setVisible(True)
+            self._hotkey_bar.set_btn_active("toggle_neural", True)
+        self._neural_panel.notify_new_request()
+        threading.Thread(target=play_sound, args=(self.config.notif,), daemon=True).start()
+
+    def _action_toggle_neural(self):
+        self._neural_vis = not self._neural_vis
+        self._neural_panel.setVisible(self._neural_vis)
+        self._hotkey_bar.set_btn_active("toggle_neural", self._neural_vis)
 
     def _check_idle(self):
         now=time.time()
