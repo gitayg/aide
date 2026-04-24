@@ -117,7 +117,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.18.1"
+VERSION      = "2.18.2"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -373,6 +373,9 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.18.2": [
+        ("⚡", "Further CPU reductions", "Terminal tick 50ms→100ms (halves paint-poll wakeups). mark_visible / mark_kbd_focus guarded against no-op calls so setStyleSheet doesn't run every 500ms per card. _update_waiting_badge guarded against unchanged counts so setWindowTitle/setBadgeNumber only run when the count actually changes."),
+    ],
     "2.18.1": [
         ("💬", "Neural animation shows the message blurb", "The ball flying between panes now carries a speech-bubble with the first line of the message (up to 60 chars). Animation lasts 1.6s with fade-in/out so you can read what's being sent."),
     ],
@@ -1583,7 +1586,7 @@ class TerminalWidget(QWidget):
         self._sel_end:   Optional[tuple] = None
         self._selecting = False
 
-        t = QTimer(self); t.timeout.connect(self._tick); t.start(50)
+        t = QTimer(self); t.timeout.connect(self._tick); t.start(100)
 
     def set_session(self, s:Optional[TermSession]):
         self.session=s; self._sel_start=None; self._sel_end=None
@@ -2284,9 +2287,11 @@ class TabCard(QFrame):
 
     def mark_visible(self, v: bool):
         """Mark this card as visible in a split pane (secondary focus)."""
+        if getattr(self, "_visible", False) == v: return
         self._visible = v; self._apply_style()
 
     def mark_kbd_focus(self, focused: bool):
+        if getattr(self, "_kbd_focus", False) == focused: return
         self._kbd_focus = focused; self._apply_style()
 
     def _apply_style(self):
@@ -4666,6 +4671,8 @@ class AIDEWindow(QMainWindow):
 
     def _update_waiting_badge(self):
         count=sum(1 for s in self.sessions.values() if getattr(s,"waiting_input",False))
+        if getattr(self, "_last_wait_count", -1) == count: return
+        self._last_wait_count = count
         base=f"{APP_NAME} v{VERSION}  —  AI Dev Env"
         self.setWindowTitle(f"[{count} waiting]  {base}" if count else base)
         try: QApplication.instance().setBadgeNumber(count)
