@@ -116,7 +116,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.22.2"
+VERSION      = "2.23.0"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -456,6 +456,9 @@ class NeuralRailOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.23.0": [
+        ("🚀", "Agent startup prompt on new terminal", "Opening a new terminal shows a dialog with a ready-to-paste agent onboarding prompt: session ID, Neural Bus URL, shared brain file, workspace directory, Claude account, and neural bus operating instructions. One click copies it all."),
+    ],
     "2.22.2": [
         ("⊞", "Click a split terminal to swap panes", "If a terminal is already open in a split pane, clicking it in the sidebar swaps that pane's session with the focused pane — so you can bring any visible terminal to your current focus without rearranging panes manually."),
     ],
@@ -3966,6 +3969,142 @@ messages you missed.
     def get_neural_result(self): return self._neural_result
 
 
+class NewTerminalDialog(QDialog):
+    """Shown when a new terminal is opened — displays an agent onboarding prompt."""
+
+    def __init__(self, session: "TermSession", neural_url: str,
+                 brain_file: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("New Terminal — Agent Prompt")
+        self.setStyleSheet(_dlg_ss())
+        self.setFixedWidth(560)
+
+        prompt = self._build_prompt(session, neural_url, brain_file)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 18, 20, 18)
+        lay.setSpacing(10)
+
+        hdr = QLabel("🚀  Agent Startup Prompt")
+        hdr.setStyleSheet(f"color:{C_ACCENT.name()};font-weight:bold;font-size:13px;")
+        lay.addWidget(hdr)
+
+        hint = QLabel("Paste this into your agent at the start of the session.")
+        hint.setStyleSheet(f"color:{C_MUTED.name()};font-size:11px;")
+        lay.addWidget(hint)
+
+        self._text = QPlainTextEdit(prompt)
+        self._text.setReadOnly(True)
+        self._text.setStyleSheet(
+            f"QPlainTextEdit{{background:{C_BG.name()};color:{C_FG.name()};"
+            f"border:1px solid {C_SURFACE.name()};border-radius:4px;"
+            f"font-family:{FONT_FAMILY};font-size:11px;padding:6px;}}")
+        self._text.setMinimumHeight(320)
+        lay.addWidget(self._text)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+
+        copy_btn = QPushButton("📋  Copy prompt")
+        copy_btn.setStyleSheet(
+            f"QPushButton{{background:{C_ACCENT.name()};color:#000;border:none;"
+            f"border-radius:4px;font-size:12px;font-weight:bold;padding:6px 18px;}}"
+            f"QPushButton:hover{{background:{C_ACCENT.name()}cc;}}")
+        copy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        copy_btn.clicked.connect(self._copy)
+        copy_btn.setDefault(True)
+
+        close_btn = QPushButton("Close")
+        close_btn.setStyleSheet(
+            f"QPushButton{{background:{C_SURFACE.name()};color:{C_FG.name()};"
+            f"border:none;border-radius:4px;font-size:12px;padding:6px 18px;}}"
+            f"QPushButton:hover{{background:{C_SURFACE.name()}cc;}}")
+        close_btn.clicked.connect(self.accept)
+
+        btn_row.addWidget(copy_btn)
+        btn_row.addStretch()
+        btn_row.addWidget(close_btn)
+        lay.addLayout(btn_row)
+
+        self._prompt = prompt
+
+    def _copy(self):
+        QApplication.clipboard().setText(self._prompt)
+
+    @staticmethod
+    def _build_prompt(session: "TermSession", neural_url: str, brain_file: str) -> str:
+        sid   = session.tab_id
+        wdir  = session.autostart_dir or ""
+        cmd   = session.autostart_cmd or ""
+        prof  = session.claude_profile or ""
+        args  = session.claude_args or ""
+        token = session.github_token_name or ""
+
+        lines = [
+            f"## AIDE Session — Terminal #{sid}",
+            "",
+            f"You are an AI agent running inside AIDE terminal #{sid}.",
+            "",
+            "### Environment",
+            f"- `AIDE_SESSION_ID={sid}`",
+            f"- `AIDE_NEURAL_URL={neural_url}` — Neural Bus endpoint",
+            f"- `AIDE_NEURAL_BRAIN_FILE={brain_file}` — shared memory",
+            "- The `neural` command is on your PATH",
+            "",
+            "### On startup — read the shared brain",
+            "```",
+            "neural brain",
+            "```",
+            "This prints the shared notes and instructions set by the human for all agents.",
+            "",
+            "### Register on the Neural Bus",
+            "```",
+            'neural register "<your role>" "<what you are working on>"',
+            "```",
+        ]
+
+        if wdir or cmd:
+            lines += ["", "### Workspace"]
+            if wdir:
+                lines.append(f"- Working directory: `{wdir}`")
+            if cmd:
+                lines.append(f"- Autostart command: `{cmd}`")
+
+        if prof or args or token:
+            lines += ["", "### Claude account"]
+            if prof:
+                lines.append(f"- Profile: `{prof}` (uses `~/.aide/claude-profiles/{prof}/`)")
+            if args:
+                lines.append(f"- Extra args: `{args}`")
+            if token:
+                lines.append(f"- GitHub token: `{token}` (injected as `$GITHUB_TOKEN`)")
+
+        lines += [
+            "",
+            "### Discover other agents",
+            "```",
+            "neural agents",
+            "```",
+            "",
+            "### Send a message to another agent",
+            "```",
+            'neural send <session_id> "<message>"',
+            "```",
+            "",
+            "### Update your task",
+            "```",
+            'neural task "<what you are doing now>"',
+            "```",
+            "",
+            "### Guidelines",
+            "- Only message other agents when genuinely needed for coordination.",
+            "- Be concise. Acknowledge messages with `neural send`.",
+            "- Do not spam the bus with routine status updates.",
+        ]
+
+        return "\n".join(lines)
+
+
 def _ver_tuple(v: str):
     """Convert "2.1.0" → (2, 1, 0) for comparison."""
     try: return tuple(int(x) for x in v.split("."))
@@ -4413,7 +4552,7 @@ class AIDEWindow(QMainWindow):
         self._tab_bar=TabBar()
         self._tab_bar.tab_selected.connect(self._on_tab_clicked)
         self._tab_bar.shift_tab_selected.connect(self._on_shift_tab_clicked)
-        self._tab_bar.new_tab_clicked.connect(lambda: self._new_tab())
+        self._tab_bar.new_tab_clicked.connect(lambda: self._new_tab(show_prompt=True))
         self._tab_bar.new_separator_clicked.connect(self._new_separator)
         self._tab_bar.rename_requested.connect(self._rename_tab_by_id)
         self._tab_bar.separator_rename_requested.connect(self._rename_separator)
@@ -4696,13 +4835,23 @@ class AIDEWindow(QMainWindow):
         env.update(session.variables)   # vault vars take precedence
         return env
 
-    def _new_tab(self,title:str="")->int:
+    def _new_tab(self, title: str = "", show_prompt: bool = False) -> int:
         tid=self._next_id; self._next_id+=1; s=TermSession(tid)
         if title: s.custom_title=title
         if self._vault.is_unlocked():
             s.variables = self._vault.get_vars(tid)
         self.sessions[tid]=s; s.start(self.config.shell or DEFAULT_SHELL, self._env_with_vars(s))
-        self._tab_bar.add_card(s,self.config.card); self._switch_to(tid); return tid
+        self._tab_bar.add_card(s,self.config.card); self._switch_to(tid)
+        if show_prompt:
+            QTimer.singleShot(150, lambda: self._show_new_terminal_prompt(tid))
+        return tid
+
+    def _show_new_terminal_prompt(self, tid: int):
+        s = self.sessions.get(tid)
+        if not s: return
+        url = f"http://127.0.0.1:{self._neural_port}"
+        dlg = NewTerminalDialog(s, url, str(NEURAL_BRAIN_FILE), self)
+        dlg.exec()
 
     def _close_tab(self,tid:int):
         if len(self.sessions)<=1: return
@@ -5119,7 +5268,7 @@ class AIDEWindow(QMainWindow):
             QMessageBox.StandardButton.No)
         if reply==QMessageBox.StandardButton.Yes: self._close_tab(tid)
 
-    def _action_new_tab(self): self._new_tab(f"Terminal {len(self.sessions)+1}")
+    def _action_new_tab(self): self._new_tab(f"Terminal {len(self.sessions)+1}", show_prompt=True)
     def _action_close_tab(self): self._close_tab_with_confirm(self.active_id)
 
     def _action_clear_line(self):
