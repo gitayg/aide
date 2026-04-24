@@ -94,7 +94,7 @@ from PyQt6.QtWidgets import (
     QStackedWidget, QGroupBox, QSlider, QMenu, QMenuBar, QScrollBar,
     QMessageBox, QTableWidget, QTableWidgetItem, QHeaderView,
 )
-from PyQt6.QtCore import Qt, QTimer, QSize, QRect, QPointF, pyqtSignal, QUrl, QMimeData
+from PyQt6.QtCore import Qt, QTimer, QSize, QRect, QPointF, QPoint, QEvent, pyqtSignal, QUrl, QMimeData
 from PyQt6.QtGui import (
     QFont, QFontMetrics, QPainter, QColor, QPalette, QPen,
     QKeyEvent, QResizeEvent, QPixmap, QDrag, QTextCursor, QTextCharFormat,
@@ -108,7 +108,6 @@ except ImportError:
 
 from dashboard import DashboardServer, local_ip
 from neural import NeuralBus, write_client
-from neural_ui import NeuralPanel
 
 DASHBOARD_PORT = 8765
 GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
@@ -117,7 +116,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.19.0"
+VERSION      = "2.20.0"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -367,12 +366,96 @@ class SplitBallOverlay(QWidget):
         p.end()
 
 
+class NeuralRailOverlay(QWidget):
+    """Transparent overlay on the TabBar scroll viewport.
+    Draws a vertical rail connecting bus agents and animates message packets."""
+    _X  = 5   # x-center of the rail within viewport
+    _DR = 3   # station-dot radius
+    _PR = 4   # packet radius
+
+    def __init__(self, viewport: QWidget):
+        super().__init__(viewport)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
+        self.setAutoFillBackground(False)
+        self._cards: list = []
+        self._anim_from_y = 0
+        self._anim_to_y   = 0
+        self._anim_prog   = -1.0   # -1 = idle
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(25)
+        self.resize(viewport.size())
+        self.raise_()
+
+    def set_cards(self, cards: list):
+        self._cards = cards
+        self.update()
+
+    def start_animation(self, from_y: int, to_y: int):
+        self._anim_from_y = from_y
+        self._anim_to_y   = to_y
+        self._anim_prog   = 0.0
+
+    def _tick(self):
+        if self._anim_prog < 0:
+            return
+        self._anim_prog = min(1.0, self._anim_prog + 0.033)  # ~30 steps ≈ 750ms
+        if self._anim_prog >= 1.0:
+            self._anim_prog = -1.0
+        self.update()
+
+    def paintEvent(self, ev):
+        import math
+        bus_cards = [c for c in self._cards if c.session.neural_on_bus and c.isVisible()]
+        if not bus_cards and self._anim_prog < 0:
+            return
+        vp = self.parent()
+        ys = []
+        for c in bus_cards:
+            cy = c.mapTo(vp, QPoint(0, c.height() // 2)).y()
+            if 0 <= cy < vp.height():
+                ys.append(cy)
+        ys.sort()
+
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        x = self._X
+        rail_col = C_ACCENT
+
+        if len(ys) >= 2:
+            p.setPen(QPen(rail_col, 2))
+            p.drawLine(x, ys[0], x, ys[-1])
+        elif len(ys) == 1:
+            p.setPen(QPen(rail_col, 2))
+            p.drawLine(x, max(0, ys[0] - 5), x, ys[0] + 5)
+
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(rail_col)
+        for y in ys:
+            r = self._DR
+            p.drawEllipse(x - r, y - r, r * 2, r * 2)
+
+        if self._anim_prog >= 0:
+            t  = self._anim_prog
+            t2 = t * t * (3 - 2 * t)  # smoothstep ease
+            py = int(self._anim_from_y + t2 * (self._anim_to_y - self._anim_from_y))
+            p.setBrush(QColor(255, 255, 255, 230))
+            r = self._PR
+            p.drawEllipse(x - r, py - r, r * 2, r * 2)
+
+        p.end()
+
+
 # ── What's New ──────────────────────────────────────────────────────────────
 # Each entry: (emoji, short title, one-line description)
 # Add new bullets at the TOP of this list each time you ship a change.
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.20.0": [
+        ("🛤️", "Neural rail replaces side panel", "Bus agents are shown on a live vertical rail drawn on the left of each terminal card. Messages travel as animated packets along the rail. Double-clicking any terminal name now opens Terminal Settings — rename and neural bus config in one place. Separate Neural panel removed."),
+    ],
     "2.19.0": [
         ("🔐", "Per-tab Claude account / login", "Sidebar now has a 🤖 Claude account section. Set a profile name (e.g. 'work', 'personal') — each profile gets its own CLAUDE_CONFIG_DIR at ~/.aide/claude-profiles/<name>/. 'claude /login' button runs interactive OAuth in that terminal using the chosen profile. Also a free-text Extra args field (e.g. --model sonnet) stored per tab."),
     ],
@@ -2501,6 +2584,10 @@ class TabBar(QWidget):
         self._cw.setAcceptDrops(True)
         self._cl = QVBoxLayout(self._cw); self._cl.setContentsMargins(0,0,0,0); self._cl.setSpacing(0); self._cl.addStretch()
         self._scroll.setWidget(self._cw); ml.addWidget(self._scroll, 1)
+        # Neural rail overlay — floats over the card area
+        vp = self._scroll.viewport()
+        self._rail = NeuralRailOverlay(vp)
+        vp.installEventFilter(self)
         btn = QPushButton("  +  New Terminal"); btn.setFixedHeight(34)
         btn.setStyleSheet(f"QPushButton{{background:{C_SURFACE.name()};color:{C_MUTED.name()};border:none;font-size:12px;text-align:left;padding-left:12px;}}QPushButton:hover{{background:{C_ACCENT.name()}22;color:{C_ACCENT.name()};}}")
         btn.clicked.connect(self.new_tab_clicked); ml.addWidget(btn)
@@ -2525,6 +2612,22 @@ class TabBar(QWidget):
         self._tag_pills: dict = {}
         self._sort_mode: str = ""  # "" = insertion order, SORT_TAG, SORT_RECENT
         self.dedup_tags: bool = True
+
+    def eventFilter(self, obj, event):
+        if obj is self._scroll.viewport() and event.type() == QEvent.Type.Resize:
+            self._rail.resize(obj.size())
+            self._rail.raise_()
+        return super().eventFilter(obj, event)
+
+    def animate_neural_rail(self, from_sid: int, to_sid: int):
+        """Animate a packet on the neural rail from sender card to receiver card."""
+        fc = self._card_map.get(from_sid)
+        tc = self._card_map.get(to_sid)
+        if not fc or not tc: return
+        vp = self._scroll.viewport()
+        fy = fc.mapTo(vp, QPoint(0, fc.height() // 2)).y()
+        ty = tc.mapTo(vp, QPoint(0, tc.height() // 2)).y()
+        self._rail.start_animation(fy, ty)
 
     def set_dashboard_url(self, url: str):
         self._dash_url.setText(url)
@@ -2622,6 +2725,8 @@ class TabBar(QWidget):
             card.setVisible(visible)
             if visible:
                 card.refresh()
+
+        self._rail.set_cards(list(self._card_map.values()))
 
     # ── card management ────────────────────────────────────────────────────────
     def add_card(self, s: TermSession, cfg: CardConfig) -> "TabCard":
@@ -2824,8 +2929,6 @@ class HotkeyBar(QWidget):
         ("🔔","Notifs","configure_notifs","^B-s"),
         ("🃏","Cards","configure_cards","^B-c"),
         ("🚀","Uber","toggle_uber","^B-u"),
-        ("🤖","Neural","toggle_neural","^B-n"),
-        ("📖","Neural?","neural_help",""),
     ]
 
     def __init__(self,parent=None):
@@ -3486,50 +3589,157 @@ def _dlg_ss():
 def _primary_btn(btn):
     btn.setStyleSheet(f"QPushButton{{background:{C_ACCENT.name()};color:#000;font-weight:bold;border:none;border-radius:4px;padding:6px 14px;}}QPushButton:hover{{background:{C_ACCENT.name()}cc;}}")
 
-class NeuralRegisterDialog(QDialog):
-    """Multi-field dialog for joining the Neural bus."""
-    def __init__(self, session: "TermSession", parent=None):
+class TerminalConfigDialog(QDialog):
+    """Double-click dialog: rename a terminal and configure its Neural Bus membership."""
+    def __init__(self, session: "TermSession", neural_url: str, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("🧠  Join Neural Bus")
-        self.setStyleSheet(_dlg_ss()); self.setFixedWidth(420)
-        self._result = None
+        self.setWindowTitle("Terminal Settings")
+        self.setStyleSheet(_dlg_ss()); self.setFixedWidth(440)
+        self._session = session
+        self._new_name: Optional[str] = None
+        self._neural_result = None  # None=no change, dict=join/update, False=leave
+
         lay = QVBoxLayout(self); lay.setSpacing(10); lay.setContentsMargins(20, 20, 20, 20)
-        lay.addWidget(QLabel("Register this terminal as a Neural agent.\nOther agents will see these details.",
-                             styleSheet=f"color:{C_MUTED.name()};font-size:11px;"))
-        lay.addSpacing(4)
-        form = QFormLayout(); form.setSpacing(8); form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        self._name  = QLineEdit(session.effective_title()); self._name.setPlaceholderText("e.g. Frontend Agent")
-        self._tag   = QLineEdit(", ".join(session.tags) if session.tags else "")
-        self._tag.setPlaceholderText("e.g. ui, auth")
-        self._app   = QLineEdit(); self._app.setPlaceholderText("e.g. nanoai, myapp")
-        self._role  = QLineEdit(); self._role.setPlaceholderText("e.g. Implements UI components")
-        self._task  = QLineEdit(); self._task.setPlaceholderText("e.g. Building the login page")
-        form.addRow("Name:", self._name)
-        form.addRow("Tag:", self._tag)
-        form.addRow("App:", self._app)
-        form.addRow("Role:", self._role)
-        form.addRow("Current task:", self._task)
-        lay.addLayout(form)
+
+        # ── Name ──
+        lay.addWidget(QLabel("Terminal name:"))
+        self._name_inp = QLineEdit(session.custom_title or session.effective_title())
+        self._name_inp.selectAll()
+        lay.addWidget(self._name_inp)
+
+        # ── Separator ──
+        sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet(f"background:{C_SURFACE.name()};max-height:1px;")
+        lay.addWidget(sep)
+
+        # ── Neural Bus ──
+        hdr = QLabel("🤖  Neural Bus")
+        hdr.setStyleSheet(f"color:{C_ACCENT.name()};font-weight:bold;font-size:12px;")
+        lay.addWidget(hdr)
+
+        self._neural_chk = QCheckBox("Connected to Neural Bus")
+        self._neural_chk.setChecked(session.neural_on_bus)
+        lay.addWidget(self._neural_chk)
+
+        # Neural fields (shown only when connected)
+        self._nf = QWidget()
+        nfl = QFormLayout(self._nf); nfl.setSpacing(8)
+        nfl.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        p = session._neural_profile or {}
+        self._n_name = QLineEdit(p.get("name", session.effective_title()))
+        self._n_name.setPlaceholderText("e.g. Frontend Agent")
+        self._n_tag  = QLineEdit(p.get("tag", ", ".join(getattr(session, "tags", []))))
+        self._n_tag.setPlaceholderText("e.g. ui, auth")
+        self._n_app  = QLineEdit(p.get("app", ""))
+        self._n_app.setPlaceholderText("e.g. nanoai, myapp")
+        self._n_role = QLineEdit(p.get("role", ""))
+        self._n_role.setPlaceholderText("e.g. Implements UI components")
+        self._n_task = QLineEdit(p.get("task", ""))
+        self._n_task.setPlaceholderText("e.g. Building the login page")
+        nfl.addRow("Name:", self._n_name)
+        nfl.addRow("Tag:", self._n_tag)
+        nfl.addRow("App:", self._n_app)
+        nfl.addRow("Role:", self._n_role)
+        nfl.addRow("Current task:", self._n_task)
+        lay.addWidget(self._nf)
+        self._nf.setVisible(session.neural_on_bus)
+        self._neural_chk.toggled.connect(self._nf.setVisible)
+
+        # Copy agent prompt
+        self._neural_url = neural_url
+        cp_btn = QPushButton("📋  Copy agent prompt")
+        cp_btn.setStyleSheet(
+            f"QPushButton{{background:{C_SURFACE.name()};color:{C_FG.name()};"
+            f"border:none;border-radius:3px;font-size:10px;padding:4px 8px;}}"
+            f"QPushButton:hover{{background:{C_ACCENT.name()}44;color:{C_ACCENT.name()};}}")
+        cp_btn.clicked.connect(self._copy_agent_prompt)
+        lay.addWidget(cp_btn)
+
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         _primary_btn(bb.button(QDialogButtonBox.StandardButton.Ok))
         bb.accepted.connect(self._ok); bb.rejected.connect(self.reject)
         lay.addWidget(bb)
-        self._name.returnPressed.connect(self._ok)
+        self._name_inp.returnPressed.connect(self._ok)
 
     def _ok(self):
-        name = self._name.text().strip()
-        if not name: return
-        self._result = {
-            "name": name,
-            "tag":  self._tag.text().strip(),
-            "app":  self._app.text().strip(),
-            "role": self._role.text().strip(),
-            "task": self._task.text().strip(),
-        }
+        name = self._name_inp.text().strip()
+        current = self._session.custom_title or self._session.effective_title()
+        if name and name != current:
+            self._new_name = name
+        on_bus = self._neural_chk.isChecked()
+        if on_bus:
+            n_name = self._n_name.text().strip() or self._session.effective_title()
+            self._neural_result = {
+                "name": n_name, "tag": self._n_tag.text().strip(),
+                "app":  self._n_app.text().strip(), "role": self._n_role.text().strip(),
+                "task": self._n_task.text().strip(),
+            }
+        elif self._session.neural_on_bus:
+            self._neural_result = False
         self.accept()
 
-    def get_result(self) -> Optional[dict]:
-        return self._result
+    def _copy_agent_prompt(self):
+        url = self._neural_url or "http://127.0.0.1:<port>"
+        prompt = f"""\
+## Neural Bus — Agent Operating Instructions
+
+You are an AI agent running inside AIDE, connected to the Neural Bus.
+The Neural Bus lets agents working on different tasks coordinate with each other.
+
+Messages you send to other agents are **delivered immediately** — there is
+no human approval queue. Whenever the human needs to approve an action you
+take, Claude Code's own tool-permission prompts handle that at the point
+of action (e.g. before you run a command or edit a file). The bus itself
+is a trusted communication channel between agents.
+
+### Your environment
+- `AIDE_NEURAL_URL={url}` — the bus HTTP endpoint
+- `AIDE_SESSION_ID` — your session number (check with: echo $AIDE_SESSION_ID)
+- The `neural` command is on your PATH
+
+### On startup
+Run this to announce yourself:
+```
+neural register "<your role name>" "<what you are working on>"
+```
+Example: `neural register "AppHub Agent" "Deploying auth service"`
+
+### Discovering other agents
+```
+neural agents
+```
+Lists all registered agents with their session IDs, tags, app, role, and current task.
+
+### Sending a message
+```
+neural send <session_id> "<message>"
+```
+Delivered immediately to the target agent's terminal. Use this when you
+need information from another agent, want to coordinate work, or need to
+flag a dependency or conflict.
+
+### Updating your task
+```
+neural task "<what you are doing now>"
+```
+Keep this current so other agents know your status.
+
+### Receiving messages
+Incoming messages appear directly in your terminal output as a line
+prefixed with `# 🤖 neural from [<sender>]:`. You will see them on your
+next read of the terminal. You can also run `neural inbox` to see any
+messages you missed.
+
+### Guidelines
+- Only send messages when genuinely necessary for coordination.
+- Be concise.
+- When you receive a message, acknowledge it and respond via `neural send`.
+- Do not use the bus for routine status updates; use it for cross-agent decisions.
+"""
+        QApplication.clipboard().setText(prompt)
+
+    def get_new_name(self) -> Optional[str]: return self._new_name
+    def get_neural_result(self): return self._neural_result
 
 
 def _ver_tuple(v: str):
@@ -3647,20 +3857,6 @@ class SplitTipDialog(QDialog):
         brl.addStretch(); brl.addWidget(btn)
         lay.addWidget(brow)
 
-
-class RenameDialog(QDialog):
-    def __init__(self,current:str,parent=None):
-        super().__init__(parent); self.setWindowTitle("Rename Terminal")
-        self.setStyleSheet(_dlg_ss()); self.setFixedWidth(400); self._result=None
-        lay=QVBoxLayout(self); lay.setSpacing(12); lay.setContentsMargins(20,20,20,20)
-        lay.addWidget(QLabel("New terminal name:"))
-        self._inp=QLineEdit(current); self._inp.selectAll(); lay.addWidget(self._inp)
-        bb=QDialogButtonBox(QDialogButtonBox.StandardButton.Ok|QDialogButtonBox.StandardButton.Cancel)
-        _primary_btn(bb.button(QDialogButtonBox.StandardButton.Ok))
-        bb.accepted.connect(self._ok); bb.rejected.connect(self.reject); lay.addWidget(bb)
-        self._inp.returnPressed.connect(self._ok)
-    def _ok(self): self._result=self._inp.text().strip() or None; self.accept()
-    def get_name(self)->Optional[str]: return self._result
 
 class ClipboardDialog(QDialog):
     def __init__(self,cb:SharedClipboard,parent=None):
@@ -3919,7 +4115,7 @@ class AIDEWindow(QMainWindow):
         self._focused_pane=0       # int index 0-5 — which pane last had keyboard focus
         self._num_panes=1          # number of visible panes (1-6)
         self._pane_ids=[-1,-1,-1,-1,-1,-1]  # session ID for each pane slot
-        self._notes_vis=True; self._neural_vis=False; self._last_notif:Optional[tuple]=None
+        self._notes_vis=True; self._last_notif:Optional[tuple]=None
         self._cb=SharedClipboard()
         self._vault=SecureVault()
         self._script_path=Path(sys.argv[0]).resolve()
@@ -4089,17 +4285,12 @@ class AIDEWindow(QMainWindow):
         self._notes_panel.vault_lock_requested.connect(self._on_vault_lock_requested)
         self._notes_panel.github_token_changed.connect(self._on_gh_token_selected)
         self._notes_panel.claude_login_requested.connect(self._on_claude_login)
-        self._neural_panel=NeuralPanel(self._neural_bus)
-        self._neural_panel.set_url(f"http://127.0.0.1:{self._neural_port}")
-        self._neural_panel.setVisible(False)
         self._main_splitter=QSplitter(Qt.Orientation.Horizontal)
         self._main_splitter.setHandleWidth(3)
         self._main_splitter.setStyleSheet(f"QSplitter::handle{{background:{C_SURFACE.name()};}}")
         self._main_splitter.addWidget(term_area)
         self._main_splitter.addWidget(self._notes_panel)
-        self._main_splitter.addWidget(self._neural_panel)
         self._main_splitter.setStretchFactor(0,1); self._main_splitter.setStretchFactor(1,0)
-        self._main_splitter.setStretchFactor(2,0)
         self._sidebar_splitter.addWidget(self._main_splitter)
         self._sidebar_splitter.setStretchFactor(0,0); self._sidebar_splitter.setStretchFactor(1,1)
         self._sidebar_splitter.setSizes([220, 1060])
@@ -4596,9 +4787,7 @@ class AIDEWindow(QMainWindow):
         _EVENT_Q.put(("neural_msg", msg.from_session, msg.to_session, msg.content))
 
     def _on_neural_delivered(self, from_sid: int, to_sid: int, content: str):
-        """Called on main thread when a neural message is delivered.
-        Injects it into the target terminal's PTY and animates the ball
-        if both agents are in visible panes."""
+        """Injects neural message into target terminal PTY and animates the rail."""
         sender_name = self._neural_bus.sender_name(from_sid)
         targets = [to_sid] if to_sid != -1 else [
             s.tab_id for s in self.sessions.values() if s.neural_on_bus and s.tab_id != from_sid
@@ -4609,75 +4798,12 @@ class AIDEWindow(QMainWindow):
             if not s or not s.alive: continue
             payload = f"# 🤖 neural from [{sender_name}]: {safe}\n"
             s.write(payload.encode("utf-8"))
-            self._animate_neural(from_sid, tid, content)
-        self._neural_panel.notify_new_message()
-
-    def _animate_neural(self, from_sid: int, to_sid: int, content: str = ""):
-        """If both sender and receiver are in visible panes, fly a ball between them
-        with a short blurb of the message content. Duration 1.5s minimum."""
-        src_idx = dst_idx = -1
-        for i in range(self._num_panes):
-            if self._pane_ids[i] == from_sid: src_idx = i
-            if self._pane_ids[i] == to_sid:   dst_idx = i
-        if src_idx < 0 or dst_idx < 0 or src_idx == dst_idx: return
-        src_w = self._terminals[src_idx]; dst_w = self._terminals[dst_idx]
-        src_c = src_w.mapTo(self, src_w.rect().center())
-        dst_c = dst_w.mapTo(self, dst_w.rect().center())
-        # Short blurb: first line, truncated
-        blurb = content.strip().splitlines()[0] if content.strip() else "neural"
-        if len(blurb) > 60: blurb = blurb[:57] + "…"
-        self._ball_overlay.launch(QPointF(src_c), QPointF(dst_c),
-                                  label=f"🤖 {blurb}", duration_ms=1600)
-        threading.Thread(target=_blop_sound, daemon=True).start()
-
-    def _action_toggle_neural(self):
-        self._neural_vis = not self._neural_vis
-        self._neural_panel.setVisible(self._neural_vis)
-        self._hotkey_bar.set_btn_active("toggle_neural", self._neural_vis)
+            self._tab_bar.animate_neural_rail(from_sid, tid)
+            threading.Thread(target=_blop_sound, daemon=True).start()
 
     def _on_neural_toggle(self, tid: int):
-        s = self.sessions.get(tid)
-        if not s: return
-        if s.neural_on_bus:
-            self._neural_bus.unregister(tid)
-            s.neural_on_bus = False; s._neural_profile = None
-            self._tab_bar.refresh_card(tid, force=True)
-        else:
-            dlg = NeuralRegisterDialog(s, self)
-            if dlg.exec() != QDialog.DialogCode.Accepted: return
-            r = dlg.get_result()
-            if not r: return
-            task = "  |  ".join(filter(None, [r["app"], r["role"], r["task"]]))
-            self._neural_bus.register(tid, r["name"], task, extras=r)
-            s.neural_on_bus = True; s._neural_profile = r
-            self._tab_bar.refresh_card(tid, force=True)
-            if not self._neural_vis:
-                self._neural_vis = True
-                self._neural_panel.setVisible(True)
-                self._hotkey_bar.set_btn_active("toggle_neural", True)
-
-    def _action_neural_help(self):
-        url = f"http://127.0.0.1:{self._neural_port}"
-        QMessageBox.information(self, "🤖  Neural — Agent Communication",
-            f"Neural lets Claude Code agents talk to each other.\n"
-            f"Messages are delivered immediately — any human approval\n"
-            f"happens via Claude Code's own tool-permission prompts.\n\n"
-            f"Bus URL (auto-injected):  AIDE_NEURAL_URL={url}\n\n"
-            f"Commands available in every AIDE terminal:\n\n"
-            f"  neural register \"<name>\" \"<task>\"\n"
-            f"      Announce this agent to the bus.\n\n"
-            f"  neural task \"<what you're doing now>\"\n"
-            f"      Update your current task description.\n\n"
-            f"  neural agents\n"
-            f"      List all other registered agents and their tasks.\n\n"
-            f"  neural send <session_id> \"<message>\"\n"
-            f"      Send a message to a specific agent.\n"
-            f"      Appears as '# 🤖 neural from [<you>]: …' in their terminal.\n\n"
-            f"  neural broadcast \"<message>\"\n"
-            f"      Send a message to all agents.\n\n"
-            f"  neural inbox\n"
-            f"      Read any messages you missed.\n\n"
-            f"Toggle the Neural panel:  🤖 Neural button  or  ^B-n")
+        """Context-menu 'Join/Leave Neural Bus' → open the unified Terminal Settings dialog."""
+        self._rename_tab_by_id(tid)
 
     def _check_idle(self):
         now=time.time()
@@ -4848,13 +4974,26 @@ class AIDEWindow(QMainWindow):
     def _action_rename_tab(self):
         self._rename_tab_by_id(self.active_id)
 
-    def _rename_tab_by_id(self,tid:int):
-        if tid<0 or tid not in self.sessions: return
-        s=self.sessions[tid]
-        dlg=RenameDialog(s.custom_title,self)
-        if dlg.exec()==QDialog.DialogCode.Accepted:
-            name=dlg.get_name()
-            if name is not None: s.custom_title=name; self._tab_bar.refresh_card(tid); self._update_status()
+    def _rename_tab_by_id(self, tid: int):
+        if tid < 0 or tid not in self.sessions: return
+        s = self.sessions[tid]
+        url = f"http://127.0.0.1:{self._neural_port}"
+        dlg = TerminalConfigDialog(s, url, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted: return
+        new_name = dlg.get_new_name()
+        if new_name is not None:
+            s.custom_title = new_name
+            self._tab_bar.refresh_card(tid, force=True)
+            self._update_status()
+        nr = dlg.get_neural_result()
+        if nr is False:
+            self._neural_bus.unregister(tid); s.neural_on_bus = False; s._neural_profile = None
+            self._tab_bar.refresh_card(tid, force=True)
+        elif isinstance(nr, dict):
+            task = "  |  ".join(filter(None, [nr["app"], nr["role"], nr["task"]]))
+            self._neural_bus.register(tid, nr["name"], task, extras=nr)
+            s.neural_on_bus = True; s._neural_profile = nr
+            self._tab_bar.refresh_card(tid, force=True)
 
     def _maybe_show_whats_new(self):
         """Show the What's New dialog when the version has changed since last run."""
