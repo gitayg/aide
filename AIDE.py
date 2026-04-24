@@ -116,7 +116,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.22.0"
+VERSION      = "2.22.1"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -456,6 +456,9 @@ class NeuralRailOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.22.1": [
+        ("🐙", "GitHub token scoped to focused terminal only", "Vault unlock now exports the GitHub token only to the focused terminal. Other terminals receive their vault variables but not the token; they pick it up when explicitly selected from the per-terminal combo."),
+    ],
     "2.22.0": [
         ("🧠", "Neural Brain — shared memory for all agents", "A pinned '🧠 Neural Brain' entry appears at the bottom of the terminal list. Click it to open an editor for a shared Markdown file (~/.aide/neural_brain.md) that all agents can read. Available in every AIDE terminal as $AIDE_NEURAL_BRAIN_FILE and via 'neural brain'."),
     ],
@@ -5586,13 +5589,15 @@ class AIDEWindow(QMainWindow):
         self._after_vault_unlocked()
 
     def _after_vault_unlocked(self):
-        # Populate in-memory variables for every session from the vault
+        # Populate in-memory variables for every session from the vault.
+        # Vault vars go to all sessions; GH token only to the focused session
+        # (other terminals get it when the user explicitly selects it per-terminal).
+        ftid = self._focused_tid()
         for tid,s in self.sessions.items():
             s.variables=self._vault.get_vars(tid)
-            self._inject_vars_into_shell(s)
+            self._inject_vars_into_shell(s, include_gh=(tid == ftid))
         self._notes_panel.set_vault_unlocked(True)
         # Refresh the focused pane's table + GitHub token selector
-        ftid = self._focused_tid()
         if ftid >= 0 and ftid in self.sessions:
             self._notes_panel.apply_variables(self.sessions[ftid].variables)
             self._notes_panel.set_github_token_names(
@@ -5607,7 +5612,7 @@ class AIDEWindow(QMainWindow):
         if not tok: return ""
         return f"export GITHUB_TOKEN={tok!r}; export GH_TOKEN={tok!r}; "
 
-    def _inject_vars_into_shell(self, s: "TermSession"):
+    def _inject_vars_into_shell(self, s: "TermSession", include_gh: bool = True):
         """Silently export vault variables into an already-running shell.
 
         Uses stty -echo so the export commands don't appear in the terminal
@@ -5617,7 +5622,8 @@ class AIDEWindow(QMainWindow):
         exports = "".join(
             f"export {k}={v!r};" for k, v in s.variables.items() if k.isidentifier()
         )
-        exports += self._gh_token_exports(s)
+        if include_gh:
+            exports += self._gh_token_exports(s)
         if not exports: return
         # Suppress echo → run exports → restore echo, all in one write
         payload = f"\nstty -echo; {exports} stty echo\n"
