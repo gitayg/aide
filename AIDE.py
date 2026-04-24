@@ -116,7 +116,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.20.0"
+VERSION      = "2.21.0"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -456,6 +456,10 @@ class NeuralRailOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.21.0": [
+        ("⏐", "Separators for sidebar organization", "Click '⏐ Separator' at the bottom of the terminal list to add a labeled section divider. Double-click to rename; drag-and-drop to reorder separators and terminals together. Tag grouping/deduplication removed in favor of explicit separators."),
+        ("🛤️", "Neural rail replaces side panel", "Bus agents shown on a live rail on the left of the card list. Messages animate as packets along the rail. Double-click any terminal to open Terminal Settings (rename + neural bus config in one unified dialog)."),
+    ],
     "2.20.0": [
         ("🛤️", "Neural rail replaces side panel", "Bus agents are shown on a live vertical rail drawn on the left of each terminal card. Messages travel as animated packets along the rail. Double-clicking any terminal name now opens Terminal Settings — rename and neural bus config in one place. Separate Neural panel removed."),
     ],
@@ -2230,7 +2234,7 @@ class TabCard(QFrame):
     shift_clicked_signal=pyqtSignal(int)
     rename_requested=pyqtSignal(int)
     close_requested=pyqtSignal(int)
-    reorder_requested=pyqtSignal(int,int,bool)  # src_tab_id, target_tab_id, place_before
+    reorder_requested=pyqtSignal(str,str,bool)  # src_encoded, target_encoded, place_before
     neural_toggle_requested=pyqtSignal(int)     # tab_id
 
     _MIME_TYPE="application/x-aide-tab"
@@ -2471,7 +2475,7 @@ class TabCard(QFrame):
         if (e.pos()-self._press_pos).manhattanLength()<max(QApplication.startDragDistance(),4): return
         pos=self._press_pos; self._press_pos=None  # clear before exec to avoid re-entry
         drag=QDrag(self); mime=QMimeData()
-        mime.setData(self._MIME_TYPE,str(self.session.tab_id).encode())
+        mime.setData(self._MIME_TYPE,f"t:{self.session.tab_id}".encode())
         drag.setMimeData(mime)
         pm=self.grab(); drag.setPixmap(pm); drag.setHotSpot(pos)
         drag.exec(Qt.DropAction.MoveAction|Qt.DropAction.CopyAction)
@@ -2479,9 +2483,8 @@ class TabCard(QFrame):
     def dragEnterEvent(self,ev):
         md=ev.mimeData()
         if md.hasFormat(self._MIME_TYPE):
-            try: src=int(bytes(md.data(self._MIME_TYPE)).decode())
-            except: src=-1
-            if src!=self.session.tab_id:
+            src=bytes(md.data(self._MIME_TYPE)).decode()
+            if src != f"t:{self.session.tab_id}":
                 ev.acceptProposedAction(); return
         ev.ignore()
 
@@ -2502,12 +2505,12 @@ class TabCard(QFrame):
         md=ev.mimeData()
         if not md.hasFormat(self._MIME_TYPE):
             ev.ignore(); return
-        try: src_tid=int(bytes(md.data(self._MIME_TYPE)).decode())
-        except: src_tid=-1
+        src=bytes(md.data(self._MIME_TYPE)).decode()
         above=ev.position().y()<self.height()/2
         self._drop_indicator=0; self.update()
-        if src_tid>=0 and src_tid!=self.session.tab_id:
-            self.reorder_requested.emit(src_tid,self.session.tab_id,above)
+        tgt=f"t:{self.session.tab_id}"
+        if src and src != tgt:
+            self.reorder_requested.emit(src, tgt, above)
         ev.acceptProposedAction()
 
     def paintEvent(self,ev):
@@ -2526,17 +2529,106 @@ class TabCard(QFrame):
 
 
 
-class TabBar(QWidget):
-    tab_selected           = pyqtSignal(int)
-    shift_tab_selected     = pyqtSignal(int)
-    new_tab_clicked        = pyqtSignal()
-    rename_requested       = pyqtSignal(int)
-    close_requested        = pyqtSignal(int)
-    tabs_reordered         = pyqtSignal(list)
-    neural_toggle_requested= pyqtSignal(int)
+class SeparatorCard(QFrame):
+    """A draggable section divider the user can rename."""
+    rename_requested  = pyqtSignal(int)         # sep_id
+    reorder_requested = pyqtSignal(str,str,bool) # src_encoded, target_encoded, above
+    _MIME_TYPE = "application/x-aide-tab"
 
-    # sort modes: "tag" = alphabetical by first tag, "recent" = last waiting_at desc
-    SORT_TAG    = "tag"
+    def __init__(self, sep_id: int, label: str, parent=None):
+        super().__init__(parent)
+        self.sep_id = sep_id
+        self._label = label
+        self.setFixedHeight(22)
+        self.setAcceptDrops(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._drop_indicator = 0
+        self._press_pos = None
+        self.setStyleSheet(
+            f"background:{C_BG.name()};"
+            f"border-top:1px solid {C_SURFACE.name()};"
+            f"border-bottom:1px solid {C_SURFACE.name()};")
+        lay = QHBoxLayout(self); lay.setContentsMargins(10,0,4,0)
+        self._lbl = QLabel(label or "———")
+        self._lbl.setStyleSheet(
+            f"color:{C_ACCENT.name()};font-size:10px;font-weight:bold;"
+            f"letter-spacing:1px;background:transparent;")
+        lay.addWidget(self._lbl); lay.addStretch()
+
+    def set_label(self, label: str):
+        self._label = label
+        self._lbl.setText(label or "———")
+
+    def mouseDoubleClickEvent(self, e):
+        self.rename_requested.emit(self.sep_id)
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self._press_pos = e.pos()
+
+    def mouseMoveEvent(self, e):
+        if not (e.buttons() & Qt.MouseButton.LeftButton): return
+        if self._press_pos is None: return
+        if (e.pos()-self._press_pos).manhattanLength() < max(QApplication.startDragDistance(),4): return
+        pos=self._press_pos; self._press_pos=None
+        drag=QDrag(self); mime=QMimeData()
+        mime.setData(self._MIME_TYPE, f"s:{self.sep_id}".encode())
+        drag.setMimeData(mime)
+        pm=self.grab(); drag.setPixmap(pm); drag.setHotSpot(pos)
+        drag.exec(Qt.DropAction.MoveAction|Qt.DropAction.CopyAction)
+
+    def dragEnterEvent(self, ev):
+        md=ev.mimeData()
+        if md.hasFormat(self._MIME_TYPE):
+            src=bytes(md.data(self._MIME_TYPE)).decode()
+            if src != f"s:{self.sep_id}":
+                ev.acceptProposedAction(); return
+        ev.ignore()
+
+    def dragMoveEvent(self, ev):
+        if not ev.mimeData().hasFormat(self._MIME_TYPE):
+            ev.ignore(); return
+        above = ev.position().y() < self.height()/2
+        new = -1 if above else 1
+        if new != self._drop_indicator:
+            self._drop_indicator=new; self.update()
+        ev.acceptProposedAction()
+
+    def dragLeaveEvent(self, ev):
+        if self._drop_indicator != 0:
+            self._drop_indicator=0; self.update()
+
+    def dropEvent(self, ev):
+        md=ev.mimeData()
+        if not md.hasFormat(self._MIME_TYPE): ev.ignore(); return
+        src=bytes(md.data(self._MIME_TYPE)).decode()
+        above=ev.position().y() < self.height()/2
+        self._drop_indicator=0; self.update()
+        tgt=f"s:{self.sep_id}"
+        if src and src != tgt:
+            self.reorder_requested.emit(src, tgt, above)
+        ev.acceptProposedAction()
+
+    def paintEvent(self, ev):
+        super().paintEvent(ev)
+        if self._drop_indicator != 0:
+            p=QPainter(self)
+            p.setPen(QPen(C_ACCENT,2))
+            y=0 if self._drop_indicator<0 else self.height()-1
+            p.drawLine(0,y,self.width(),y); p.end()
+
+
+class TabBar(QWidget):
+    tab_selected             = pyqtSignal(int)
+    shift_tab_selected       = pyqtSignal(int)
+    new_tab_clicked          = pyqtSignal()
+    new_separator_clicked    = pyqtSignal()
+    rename_requested         = pyqtSignal(int)
+    separator_rename_requested = pyqtSignal(int)  # sep_id
+    close_requested          = pyqtSignal(int)
+    tabs_reordered           = pyqtSignal(list)
+    neural_toggle_requested  = pyqtSignal(int)
+
     SORT_RECENT = "recent"
 
     def __init__(self, parent=None):
@@ -2548,7 +2640,7 @@ class TabBar(QWidget):
         self._scroll = QScrollArea(); self._scroll.setWidgetResizable(True)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._scroll.setStyleSheet("QScrollArea{border:none;}QScrollBar:vertical{width:4px;}QScrollBar::handle:vertical{background:#444;border-radius:2px;}")
-        # Filter + sort bar
+        # Filter bar (unread filter + recent sort only; tag pills removed)
         self._filter_bar = QWidget(); self._filter_bar.setFixedHeight(26)
         self._filter_bar.setStyleSheet(f"background:{C_SURFACE.name()};")
         fb_lay = QHBoxLayout(self._filter_bar); fb_lay.setContentsMargins(6,0,4,0); fb_lay.setSpacing(0)
@@ -2570,18 +2662,12 @@ class TabBar(QWidget):
         self._unread_filter_btn.toggled.connect(self._on_unread_filter_toggled)
         fb_lay.addWidget(self._unread_filter_btn)
         fb_lay.addStretch()
-        # Sort buttons
-        self._sort_tag_btn = QPushButton("A-Z"); self._sort_tag_btn.setCheckable(True)
-        self._sort_tag_btn.setFixedHeight(20); self._sort_tag_btn.setStyleSheet(_pill_css)
-        self._sort_tag_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._sort_tag_btn.setToolTip("Sort by tag name")
-        self._sort_tag_btn.clicked.connect(lambda: self._set_sort(self.SORT_TAG))
         self._sort_recent_btn = QPushButton("⏱"); self._sort_recent_btn.setCheckable(True)
         self._sort_recent_btn.setFixedHeight(20); self._sort_recent_btn.setStyleSheet(_pill_css)
         self._sort_recent_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._sort_recent_btn.setToolTip("Sort by last question from Claude")
         self._sort_recent_btn.clicked.connect(lambda: self._set_sort(self.SORT_RECENT))
-        fb_lay.addWidget(self._sort_tag_btn); fb_lay.addWidget(self._sort_recent_btn)
+        fb_lay.addWidget(self._sort_recent_btn)
         ml.addWidget(self._filter_bar)
         self._cw = QWidget(); self._cw.setStyleSheet(f"background:{C_PANEL.name()};")
         self._cw.setAcceptDrops(True)
@@ -2591,9 +2677,19 @@ class TabBar(QWidget):
         vp = self._scroll.viewport()
         self._rail = NeuralRailOverlay(vp)
         vp.installEventFilter(self)
-        btn = QPushButton("  +  New Terminal"); btn.setFixedHeight(34)
-        btn.setStyleSheet(f"QPushButton{{background:{C_SURFACE.name()};color:{C_MUTED.name()};border:none;font-size:12px;text-align:left;padding-left:12px;}}QPushButton:hover{{background:{C_ACCENT.name()}22;color:{C_ACCENT.name()};}}")
-        btn.clicked.connect(self.new_tab_clicked); ml.addWidget(btn)
+        # New Terminal + New Separator buttons
+        _new_btn_ss = (f"QPushButton{{background:{C_SURFACE.name()};color:{C_MUTED.name()};"
+                       f"border:none;font-size:12px;text-align:left;padding-left:12px;}}"
+                       f"QPushButton:hover{{background:{C_ACCENT.name()}22;color:{C_ACCENT.name()};}}")
+        btn_row = QWidget(); btn_row.setFixedHeight(34)
+        btn_row.setStyleSheet(f"background:{C_SURFACE.name()};")
+        br = QHBoxLayout(btn_row); br.setContentsMargins(0,0,0,0); br.setSpacing(0)
+        self._btn_new_term = QPushButton("  +  Terminal"); self._btn_new_term.setStyleSheet(_new_btn_ss)
+        self._btn_new_term.clicked.connect(self.new_tab_clicked)
+        self._btn_new_sep = QPushButton("⏐  Separator"); self._btn_new_sep.setStyleSheet(_new_btn_ss)
+        self._btn_new_sep.clicked.connect(self.new_separator_clicked)
+        br.addWidget(self._btn_new_term, 1); br.addWidget(self._btn_new_sep, 1)
+        ml.addWidget(btn_row)
         # Dashboard footer
         self._dash_footer = QWidget(); self._dash_footer.setFixedHeight(28)
         self._dash_footer.setStyleSheet(f"background:{C_SURFACE.name()};border-top:1px solid #21262d;")
@@ -2608,13 +2704,13 @@ class TabBar(QWidget):
         df.addWidget(self._dash_lbl); df.addWidget(self._dash_url, 1); df.addWidget(self._dash_copy)
         ml.addWidget(self._dash_footer)
         self._card_map: Dict[int, TabCard] = {}
+        self._sep_map: Dict[int, SeparatorCard] = {}
         self._sessions: dict = {}
+        self._seps: dict = {}      # sep_id → {"label": str}
+        self._order: list = []     # [("t", tab_id) | ("s", sep_id), ...]
         self._kbd_idx: int = -1
         self._unread_filter: bool = False
-        self._tag_filter: str = ""
-        self._tag_pills: dict = {}
-        self._sort_mode: str = ""  # "" = insertion order, SORT_TAG, SORT_RECENT
-        self.dedup_tags: bool = True
+        self._sort_mode: str = ""  # "" = manual order, SORT_RECENT
 
     def eventFilter(self, obj, event):
         if obj is self._scroll.viewport() and event.type() == QEvent.Type.Resize:
@@ -2645,89 +2741,46 @@ class TabBar(QWidget):
         self._unread_filter = checked
         self.rebuild_layout(self._sessions)
 
-    def update_tag_pills(self):
-        all_tags = set()
-        for s in self._sessions.values():
-            all_tags.update(getattr(s, 'tags', []))
-        for tag in list(self._tag_pills):
-            if tag not in all_tags:
-                self._tag_pills.pop(tag).deleteLater()
-        for tag in sorted(all_tags):
-            if tag not in self._tag_pills:
-                btn = QPushButton(f"[{tag}]")
-                btn.setCheckable(True)
-                btn.setFixedHeight(20)
-                btn.setStyleSheet(
-                    f"QPushButton{{background:transparent;color:{C_MUTED.name()};"
-                    f"border:1px solid transparent;border-radius:3px;font-size:10px;padding:0 4px;}}"
-                    f"QPushButton:hover{{color:{C_FG.name()};}}"
-                    f"QPushButton:checked{{background:{C_ACCENT.name()}33;color:{C_ACCENT.name()};"
-                    f"border-color:{C_ACCENT.name()};}}"
-                )
-                btn.setCursor(Qt.CursorShape.PointingHandCursor)
-                btn.setChecked(tag == self._tag_filter)
-                btn.clicked.connect(lambda checked, t=tag: self._on_tag_pill_clicked(t))
-                fb_lay = self._filter_bar.layout()
-                # Insert tag pills after the Unread button (index 0), before the stretch
-                insert_pos = 1 + sum(1 for t2 in sorted(all_tags) if t2 < tag and t2 in self._tag_pills)
-                fb_lay.insertWidget(insert_pos, btn)
-                self._tag_pills[tag] = btn
-
-    def _on_tag_pill_clicked(self, tag: str):
-        if self._tag_filter == tag:
-            self._tag_filter = ""
-        else:
-            self._tag_filter = tag
-        for t, btn in self._tag_pills.items():
-            btn.setChecked(t == self._tag_filter)
-        self.rebuild_layout(self._sessions)
-
     def _set_sort(self, mode: str):
         if self._sort_mode == mode:
             mode = ""
         self._sort_mode = mode
-        self._sort_tag_btn.setChecked(mode == self.SORT_TAG)
         self._sort_recent_btn.setChecked(mode == self.SORT_RECENT)
         self.rebuild_layout(self._sessions)
 
     def rebuild_layout(self, sessions: dict):
         self._sessions = sessions
-        self.update_tag_pills()
 
-        # Detach all cards from layout (keep alive)
+        # Detach all widgets from layout (keep alive)
         while self._cl.count() > 1:
             item = self._cl.takeAt(0)
             w = item.widget()
-            if w:
-                w.setParent(None)
+            if w: w.setParent(None)
 
-        # Determine display order
-        tids = list(self._sessions.keys())
-        if self._sort_mode == self.SORT_TAG:
-            def _tag_key(tid):
-                tags = getattr(self._sessions[tid], 'tags', [])
-                return (tags[0].lower() if tags else "\xff", tid)
-            tids.sort(key=_tag_key)
-        elif self._sort_mode == self.SORT_RECENT:
-            tids.sort(key=lambda tid: getattr(self._sessions[tid], 'last_waiting_at', 0.0), reverse=True)
+        # Determine ordered items
+        if self._sort_mode == self.SORT_RECENT:
+            # Sort only terminal items by last_waiting_at; separators go to front
+            sep_items = [it for it in self._order if it[0] == "s"]
+            term_items = [it for it in self._order if it[0] == "t"]
+            term_items.sort(key=lambda it: getattr(
+                self._sessions.get(it[1]), 'last_waiting_at', 0.0), reverse=True)
+            ordered = sep_items + term_items
+        else:
+            ordered = self._order
 
-        prev_visible_tag = None
-        for tid in tids:
-            card = self._card_map.get(tid)
-            if not card: continue
-            s = self._sessions[tid]
-            tags = getattr(s, 'tags', [])
-            tag_key = tags[0] if tags else ""
-            passes_tag = not self._tag_filter or tag_key == self._tag_filter
-            passes_unread = not self._unread_filter or card._unread
-            visible = passes_tag and passes_unread
-            if visible:
-                card._show_tag = (not self.dedup_tags) or (tag_key != prev_visible_tag)
-                prev_visible_tag = tag_key
-            self._cl.insertWidget(self._cl.count()-1, card)
-            card.setVisible(visible)
-            if visible:
-                card.refresh()
+        for typ, oid in ordered:
+            if typ == "t":
+                card = self._card_map.get(oid)
+                if not card: continue
+                passes_unread = not self._unread_filter or card._unread
+                self._cl.insertWidget(self._cl.count()-1, card)
+                card.setVisible(passes_unread)
+                if passes_unread: card.refresh()
+            elif typ == "s":
+                sc = self._sep_map.get(oid)
+                if sc:
+                    self._cl.insertWidget(self._cl.count()-1, sc)
+                    sc.setVisible(not self._unread_filter)
 
         self._rail.set_cards(list(self._card_map.values()))
 
@@ -2742,6 +2795,9 @@ class TabBar(QWidget):
         card.neural_toggle_requested.connect(self.neural_toggle_requested)
         self._card_map[s.tab_id] = card
         self._sessions[s.tab_id] = s
+        item = ("t", s.tab_id)
+        if item not in self._order:
+            self._order.append(item)
         self.rebuild_layout(self._sessions)
         return card
 
@@ -2749,7 +2805,58 @@ class TabBar(QWidget):
         if card := self._card_map.pop(tid, None):
             card.deleteLater()
         self._sessions.pop(tid, None)
+        self._order = [it for it in self._order if it != ("t", tid)]
         self.rebuild_layout(self._sessions)
+
+    # ── separator management ───────────────────────────────────────────────────
+    def add_separator(self, sep_id: int, label: str):
+        sc = SeparatorCard(sep_id, label)
+        sc.rename_requested.connect(self.separator_rename_requested)
+        sc.reorder_requested.connect(self._handle_reorder)
+        self._sep_map[sep_id] = sc
+        self._seps[sep_id] = {"label": label}
+        item = ("s", sep_id)
+        if item not in self._order:
+            self._order.append(item)
+        self.rebuild_layout(self._sessions)
+
+    def remove_separator(self, sep_id: int):
+        if sc := self._sep_map.pop(sep_id, None):
+            sc.deleteLater()
+        self._seps.pop(sep_id, None)
+        self._order = [it for it in self._order if it != ("s", sep_id)]
+        self.rebuild_layout(self._sessions)
+
+    def rename_separator(self, sep_id: int, label: str):
+        if sc := self._sep_map.get(sep_id):
+            sc.set_label(label)
+        if sep_id in self._seps:
+            self._seps[sep_id]["label"] = label
+
+    def get_full_order(self) -> list:
+        """Return the current display order as a list of encoded strings ("t:id" / "s:id")."""
+        return [f"{typ}:{oid}" for typ, oid in self._order]
+
+    def set_full_order(self, encoded: list):
+        """Restore order from list of encoded strings; ignores unknown items."""
+        new_order = []
+        for s in encoded:
+            parts = s.split(":", 1)
+            if len(parts) != 2: continue
+            typ, oid_str = parts
+            try: oid = int(oid_str)
+            except ValueError: continue
+            item = (typ, oid)
+            if typ == "t" and oid in self._card_map:
+                new_order.append(item)
+            elif typ == "s" and oid in self._sep_map:
+                new_order.append(item)
+        # Append any items not in the saved order
+        known = set(new_order)
+        for it in self._order:
+            if it not in known:
+                new_order.append(it)
+        self._order = new_order
 
     def set_active(self, tid: int, secondary_tid: int = -1):
         for t, c in self._card_map.items():
@@ -2820,22 +2927,23 @@ class TabBar(QWidget):
         c._last_state = state
         c.refresh()
 
-    def _handle_reorder(self, src_tid: int, target_tid: int, place_before: bool):
-        if src_tid == target_tid: return
-        if src_tid not in self._sessions or target_tid not in self._sessions: return
-        items = list(self._sessions.items())
-        src_item = next((it for it in items if it[0]==src_tid), None)
-        if not src_item: return
-        items = [it for it in items if it[0]!=src_tid]
-        tgt_idx = next((i for i,(k,_) in enumerate(items) if k==target_tid), -1)
-        if tgt_idx<0: return
-        items.insert(tgt_idx if place_before else tgt_idx+1, src_item)
-        self._sessions = dict(items)
-        order = [k for k,_ in items]
-        # Defer rebuild until after drag.exec() unwinds — reparenting widgets
-        # mid-drag confuses Qt's OS drag machinery and silently cancels the drop.
+    def _handle_reorder(self, src_enc: str, tgt_enc: str, place_before: bool):
+        def _parse(s):
+            parts = s.split(":", 1)
+            if len(parts) != 2: return None
+            typ, oid_str = parts
+            try: return (typ, int(oid_str))
+            except ValueError: return None
+        src = _parse(src_enc); tgt = _parse(tgt_enc)
+        if not src or not tgt or src == tgt: return
+        if src not in self._order or tgt not in self._order: return
+        self._order.remove(src)
+        idx = self._order.index(tgt)
+        self._order.insert(idx if place_before else idx + 1, src)
+        term_order = [oid for typ, oid in self._order if typ == "t"]
+        # Defer rebuild until after drag.exec() unwinds
         QTimer.singleShot(0, lambda: self.rebuild_layout(self._sessions))
-        self.tabs_reordered.emit(order)
+        self.tabs_reordered.emit(term_order)
 
 # ═════════════════════════════════════════════════════════════════════════════
 # TOP BAR / NOTIFICATION BANNER / HOTKEY BAR
@@ -4184,14 +4292,17 @@ class AIDEWindow(QMainWindow):
         self._info_bar=AIInfoBar(); self._info_bar.setVisible(False)
         mid=QWidget(); ml=QHBoxLayout(mid); ml.setContentsMargins(0,0,0,0); ml.setSpacing(0)
         self._tab_bar=TabBar()
-        self._tab_bar.dedup_tags=self.config.card.dedup_tags
         self._tab_bar.tab_selected.connect(self._on_tab_clicked)
         self._tab_bar.shift_tab_selected.connect(self._on_shift_tab_clicked)
         self._tab_bar.new_tab_clicked.connect(lambda: self._new_tab())
+        self._tab_bar.new_separator_clicked.connect(self._new_separator)
         self._tab_bar.rename_requested.connect(self._rename_tab_by_id)
+        self._tab_bar.separator_rename_requested.connect(self._rename_separator)
         self._tab_bar.close_requested.connect(self._close_tab_with_confirm)
         self._tab_bar.tabs_reordered.connect(self._on_tabs_reordered)
         self._tab_bar.neural_toggle_requested.connect(self._on_neural_toggle)
+        self._separators: Dict[int, dict] = {}  # sep_id → {"label"}
+        self._next_sep_id: int = 1
         self._sidebar_splitter=QSplitter(Qt.Orientation.Horizontal)
         self._sidebar_splitter.setHandleWidth(3)
         self._sidebar_splitter.setStyleSheet(f"QSplitter::handle{{background:{C_SURFACE.name()};}}QSplitter::handle:hover{{background:{C_ACCENT.name()}44;}}")
@@ -4998,6 +5109,22 @@ class AIDEWindow(QMainWindow):
             s.neural_on_bus = True; s._neural_profile = nr
             self._tab_bar.refresh_card(tid, force=True)
 
+    def _new_separator(self):
+        from PyQt6.QtWidgets import QInputDialog
+        label, ok = QInputDialog.getText(self, "New Separator", "Separator label:")
+        if not ok: return
+        sid = self._next_sep_id; self._next_sep_id += 1
+        self._separators[sid] = {"label": label.strip()}
+        self._tab_bar.add_separator(sid, label.strip())
+
+    def _rename_separator(self, sep_id: int):
+        from PyQt6.QtWidgets import QInputDialog
+        current = self._separators.get(sep_id, {}).get("label", "")
+        label, ok = QInputDialog.getText(self, "Rename Separator", "Label:", text=current)
+        if not ok: return
+        self._separators[sep_id] = {"label": label.strip()}
+        self._tab_bar.rename_separator(sep_id, label.strip())
+
     def _maybe_show_whats_new(self):
         """Show the What's New dialog when the version has changed since last run."""
         try:
@@ -5184,7 +5311,6 @@ class AIDEWindow(QMainWindow):
                 self.config.card.show_tags=show_tags
                 self.config.card.dedup_tags=dedup_tags
                 self.config.save()
-                self._tab_bar.dedup_tags=dedup_tags
                 for tid in self.sessions:
                     if c:=self._tab_bar._card_map.get(tid): c.cfg=self.config.card; c.refresh()
                 self._tab_bar.rebuild_layout(self._tab_bar._sessions)
@@ -5402,7 +5528,10 @@ class AIDEWindow(QMainWindow):
             bp=self._browsers.get(self.active_id)
             if bp: self.sessions[self.active_id].browser_url=bp._url.text().strip()
         data={"tabs":{str(k):v.to_dict() for k,v in self.sessions.items()},
-              "active":self.active_id,"next_id":self._next_id}
+              "active":self.active_id,"next_id":self._next_id,
+              "separators":self._separators,
+              "next_sep_id":self._next_sep_id,
+              "order":self._tab_bar.get_full_order()}
         try: SESSION_FILE.write_text(json.dumps(data,indent=2))
         except: pass
         # Flush vault (no-op if locked; otherwise re-encrypts with current key)
@@ -5448,6 +5577,21 @@ class AIDEWindow(QMainWindow):
             except Exception as e:
                 _log_err(f"tab {k} load failed: {e}")
         _log(f"loaded {len(self.sessions)} sessions total")
+        # Restore separators
+        self._next_sep_id = max(self._next_sep_id, data.get("next_sep_id", 1))
+        for sid_str, info in data.get("separators", {}).items():
+            try:
+                sid = int(sid_str)
+                label = info.get("label", "") if isinstance(info, dict) else str(info)
+                self._separators[sid] = {"label": label}
+                self._tab_bar.add_separator(sid, label)
+            except Exception as e:
+                _log_err(f"separator {sid_str} load failed: {e}")
+        # Restore full order (terminals + separators interleaved)
+        saved_order = data.get("order", [])
+        if saved_order:
+            self._tab_bar.set_full_order(saved_order)
+            self._tab_bar.rebuild_layout(self._tab_bar._sessions)
         # Restore Neural bus registrations
         for tid, s in self.sessions.items():
             p = getattr(s, "_neural_profile", None)
