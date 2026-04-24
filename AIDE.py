@@ -116,7 +116,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.22.1"
+VERSION      = "2.22.2"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -456,6 +456,9 @@ class NeuralRailOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.22.2": [
+        ("⊞", "Click a split terminal to swap panes", "If a terminal is already open in a split pane, clicking it in the sidebar swaps that pane's session with the focused pane — so you can bring any visible terminal to your current focus without rearranging panes manually."),
+    ],
     "2.22.1": [
         ("🐙", "GitHub token scoped to focused terminal only", "Vault unlock now exports the GitHub token only to the focused terminal. Other terminals receive their vault variables but not the token; they pick it up when explicitly selected from the per-terminal combo."),
     ],
@@ -5388,6 +5391,15 @@ class AIDEWindow(QMainWindow):
                 self._secondary_id=tid
                 self._set_split("terminal")
             return
+        # If the clicked terminal is already visible in another pane, swap it with
+        # the focused pane instead of navigating to it in the focused pane.
+        if self._split_mode == "terminal" and tid in self.sessions:
+            for i in range(self._num_panes):
+                if self._pane_ids[i] == tid and i != self._focused_pane:
+                    focused_tid = self._pane_ids[self._focused_pane]
+                    self._set_pane_session(self._focused_pane, tid)
+                    self._set_pane_session(i, focused_tid)
+                    return
         # In split-terminal mode: clicking a card replaces whichever pane is focused
         if self._split_mode == "terminal" and tid in self.sessions:
             if self._focused_pane > 0:
