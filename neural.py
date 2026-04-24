@@ -232,6 +232,7 @@ Usage:
   neural send <session_id> "<message>"
   neural broadcast "<message>"
   neural inbox
+  neural brain
 """
 import os, sys, json
 from urllib.request import urlopen, Request
@@ -297,8 +298,18 @@ def _inbox(_):
     for m in msgs:
         print(f"  From {m['from']}: {m['content']}")
 
+def _brain(_):
+    bf = os.environ.get("AIDE_NEURAL_BRAIN_FILE", "")
+    if not bf: sys.exit("AIDE_NEURAL_BRAIN_FILE not set — are you inside an AIDE terminal?")
+    try:
+        content = open(bf, encoding="utf-8").read()
+        if not content.strip(): print("(neural brain is empty)"); return
+        print(content)
+    except FileNotFoundError:
+        print("(neural brain is empty)")
+
 _CMDS = {"register": _register, "task": _task, "agents": _agents,
-         "send": _send, "broadcast": _broadcast, "inbox": _inbox}
+         "send": _send, "broadcast": _broadcast, "inbox": _inbox, "brain": _brain}
 
 if __name__ == "__main__":
     if not URL: sys.exit("AIDE_NEURAL_URL not set — are you inside an AIDE terminal?")

@@ -116,7 +116,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.21.0"
+VERSION      = "2.22.0"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -456,6 +456,9 @@ class NeuralRailOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.22.0": [
+        ("🧠", "Neural Brain — shared memory for all agents", "A pinned '🧠 Neural Brain' entry appears at the bottom of the terminal list. Click it to open an editor for a shared Markdown file (~/.aide/neural_brain.md) that all agents can read. Available in every AIDE terminal as $AIDE_NEURAL_BRAIN_FILE and via 'neural brain'."),
+    ],
     "2.21.0": [
         ("⏐", "Separators for sidebar organization", "Click '⏐ Separator' at the bottom of the terminal list to add a labeled section divider. Double-click to rename; drag-and-drop to reorder separators and terminals together. Tag grouping/deduplication removed in favor of explicit separators."),
         ("🛤️", "Neural rail replaces side panel", "Bus agents shown on a live rail on the left of the card list. Messages animate as packets along the rail. Double-click any terminal to open Terminal Settings (rename + neural bus config in one unified dialog)."),
@@ -696,8 +699,9 @@ WHATS_NEW: Dict[str, list] = {
         ("🔐", "SSH host detection",           "Improved: parses more terminal-title formats and OSC 7 remote hostnames"),
     ],
 }
-CONFIG_DIR   = Path.home() / ".aide"
-SESSION_FILE = CONFIG_DIR / "session.json"
+CONFIG_DIR        = Path.home() / ".aide"
+SESSION_FILE      = CONFIG_DIR / "session.json"
+NEURAL_BRAIN_FILE = CONFIG_DIR / "neural_brain.md"
 CONFIG_FILE  = CONFIG_DIR / "config.json"
 CLIP_FILE       = CONFIG_DIR / "clipboard.json"
 VAULT_FILE      = CONFIG_DIR / "vault.enc"
@@ -2618,16 +2622,104 @@ class SeparatorCard(QFrame):
             p.drawLine(0,y,self.width(),y); p.end()
 
 
+class NeuralBrainCard(QFrame):
+    """Pinned card at the bottom of the terminal list — opens the shared brain editor."""
+    clicked = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(46)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setStyleSheet(
+            f"QFrame{{background:{C_BG.name()};"
+            f"border-top:2px solid {C_ACCENT.name()}44;}}"
+            f"QFrame:hover{{background:{C_ACCENT.name()}18;}}")
+        lay = QVBoxLayout(self); lay.setContentsMargins(10, 6, 8, 6); lay.setSpacing(1)
+        hdr = QHBoxLayout(); hdr.setSpacing(6)
+        icon = QLabel("🧠"); icon.setStyleSheet("font-size:14px;background:transparent;")
+        title = QLabel("Neural Brain")
+        title.setStyleSheet(
+            f"color:{C_ACCENT.name()};font-weight:bold;font-size:12px;background:transparent;")
+        hdr.addWidget(icon); hdr.addWidget(title); hdr.addStretch()
+        lay.addLayout(hdr)
+        self._sub = QLabel("Shared memory & instructions for all agents")
+        self._sub.setStyleSheet(f"color:{C_MUTED.name()};font-size:10px;background:transparent;")
+        lay.addWidget(self._sub)
+
+    def update_preview(self, content: str):
+        chars = len(content)
+        lines = content.count("\n") + 1 if content.strip() else 0
+        self._sub.setText(
+            f"{lines} line{'s' if lines != 1 else ''}  ·  {chars} chars"
+            if chars else "Click to add shared memory & instructions")
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+
+
+class NeuralBrainDialog(QDialog):
+    """Editor for the shared neural brain file."""
+    def __init__(self, content: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("🧠  Neural Brain — Shared Memory")
+        self.setStyleSheet(_dlg_ss())
+        self.setMinimumSize(640, 520)
+        self._saved_content = content
+        lay = QVBoxLayout(self); lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(0)
+
+        hdr = QLabel("  🧠  Neural Brain — Shared Memory & Instructions")
+        hdr.setFixedHeight(42)
+        hdr.setStyleSheet(
+            f"background:{C_ACCENT.name()};color:#000;"
+            f"font-weight:bold;font-size:14px;padding:0 16px;")
+        lay.addWidget(hdr)
+
+        info_txt = (
+            f"  Available to all agents as  $AIDE_NEURAL_BRAIN_FILE  "
+            f"and via  neural brain\n"
+            f"  Read it with:  cat \"$AIDE_NEURAL_BRAIN_FILE\"")
+        info = QLabel(info_txt)
+        info.setStyleSheet(
+            f"color:{C_MUTED.name()};font-size:10px;"
+            f"background:{C_BG.name()};padding:5px 12px;")
+        lay.addWidget(info)
+
+        self._editor = QTextEdit()
+        self._editor.setPlainText(content)
+        self._editor.setStyleSheet(
+            f"QTextEdit{{background:{C_BG.name()};color:{C_FG.name()};"
+            f"font-family:{FONT_FAMILY};font-size:12px;border:none;padding:12px;}}")
+        lay.addWidget(self._editor, 1)
+
+        foot = QWidget(); fl = QHBoxLayout(foot); fl.setContentsMargins(12, 8, 12, 12)
+        cancel_btn = QPushButton("Cancel"); cancel_btn.clicked.connect(self.reject)
+        save_btn = QPushButton("Save"); _primary_btn(save_btn); save_btn.clicked.connect(self._save)
+        fl.addStretch(); fl.addWidget(cancel_btn); fl.addWidget(save_btn)
+        lay.addWidget(foot)
+
+    def _save(self):
+        content = self._editor.toPlainText()
+        try: NEURAL_BRAIN_FILE.write_text(content, encoding="utf-8")
+        except Exception: pass
+        self._saved_content = content
+        self.accept()
+
+    def get_content(self) -> str:
+        return self._saved_content
+
+
 class TabBar(QWidget):
-    tab_selected             = pyqtSignal(int)
-    shift_tab_selected       = pyqtSignal(int)
-    new_tab_clicked          = pyqtSignal()
-    new_separator_clicked    = pyqtSignal()
-    rename_requested         = pyqtSignal(int)
-    separator_rename_requested = pyqtSignal(int)  # sep_id
-    close_requested          = pyqtSignal(int)
-    tabs_reordered           = pyqtSignal(list)
-    neural_toggle_requested  = pyqtSignal(int)
+    tab_selected               = pyqtSignal(int)
+    shift_tab_selected         = pyqtSignal(int)
+    new_tab_clicked            = pyqtSignal()
+    new_separator_clicked      = pyqtSignal()
+    rename_requested           = pyqtSignal(int)
+    separator_rename_requested = pyqtSignal(int)
+    close_requested            = pyqtSignal(int)
+    tabs_reordered             = pyqtSignal(list)
+    neural_toggle_requested    = pyqtSignal(int)
+    brain_clicked              = pyqtSignal()
 
     SORT_RECENT = "recent"
 
@@ -2677,6 +2769,10 @@ class TabBar(QWidget):
         vp = self._scroll.viewport()
         self._rail = NeuralRailOverlay(vp)
         vp.installEventFilter(self)
+        # Neural Brain card — always visible, pinned above the action buttons
+        self._brain_card = NeuralBrainCard()
+        self._brain_card.clicked.connect(self.brain_clicked)
+        ml.addWidget(self._brain_card)
         # New Terminal + New Separator buttons
         _new_btn_ss = (f"QPushButton{{background:{C_SURFACE.name()};color:{C_MUTED.name()};"
                        f"border:none;font-size:12px;text-align:left;padding-left:12px;}}"
@@ -2711,6 +2807,9 @@ class TabBar(QWidget):
         self._kbd_idx: int = -1
         self._unread_filter: bool = False
         self._sort_mode: str = ""  # "" = manual order, SORT_RECENT
+
+    def update_brain_preview(self, content: str):
+        self._brain_card.update_preview(content)
 
     def eventFilter(self, obj, event):
         if obj is self._scroll.viewport() and event.type() == QEvent.Type.Resize:
@@ -3806,7 +3905,15 @@ is a trusted communication channel between agents.
 ### Your environment
 - `AIDE_NEURAL_URL={url}` — the bus HTTP endpoint
 - `AIDE_SESSION_ID` — your session number (check with: echo $AIDE_SESSION_ID)
+- `AIDE_NEURAL_BRAIN_FILE` — path to the shared memory file (readable by all agents)
 - The `neural` command is on your PATH
+
+### Shared brain (read on startup)
+```
+neural brain
+```
+Prints the shared memory file — instructions and context set by the human
+for all agents. Read it at the start of every session.
 
 ### On startup
 Run this to announce yourself:
@@ -4253,6 +4360,12 @@ class AIDEWindow(QMainWindow):
         # the previous-session screenshot overlay.
         self._show_screenshot_overlay=False
         if not self.sessions: self._new_tab()
+        # Initialise brain card preview from existing file (if any)
+        try:
+            self._tab_bar.update_brain_preview(
+                NEURAL_BRAIN_FILE.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            pass
         # Show What's New popup if AIDE.py was updated since last run.
         QTimer.singleShot(400, self._maybe_show_whats_new)
 
@@ -4301,6 +4414,7 @@ class AIDEWindow(QMainWindow):
         self._tab_bar.close_requested.connect(self._close_tab_with_confirm)
         self._tab_bar.tabs_reordered.connect(self._on_tabs_reordered)
         self._tab_bar.neural_toggle_requested.connect(self._on_neural_toggle)
+        self._tab_bar.brain_clicked.connect(self._open_brain_editor)
         self._separators: Dict[int, dict] = {}  # sep_id → {"label"}
         self._next_sep_id: int = 1
         self._sidebar_splitter=QSplitter(Qt.Orientation.Horizontal)
@@ -4555,9 +4669,10 @@ class AIDEWindow(QMainWindow):
     def _env_with_vars(self, session: "TermSession") -> dict:
         """Merge config env_overrides, this session's GitHub token, vault variables, and neural bus."""
         env = dict(self.config.env_overrides)
-        env["AIDE_NEURAL_URL"]    = f"http://127.0.0.1:{self._neural_port}"
-        env["AIDE_SESSION_ID"]    = str(session.tab_id)
-        env["PATH"]               = f"{self._neural_client_dir}:{os.environ.get('PATH', '')}"
+        env["AIDE_NEURAL_URL"]        = f"http://127.0.0.1:{self._neural_port}"
+        env["AIDE_SESSION_ID"]        = str(session.tab_id)
+        env["AIDE_NEURAL_BRAIN_FILE"] = str(NEURAL_BRAIN_FILE)
+        env["PATH"]                   = f"{self._neural_client_dir}:{os.environ.get('PATH', '')}"
         # Inject this tab's GitHub token (env is set before autostart runs,
         # since autostart is sent as shell input after execvpe with env).
         name = getattr(session, "github_token_name", "")
@@ -5124,6 +5239,15 @@ class AIDEWindow(QMainWindow):
         if not ok: return
         self._separators[sep_id] = {"label": label.strip()}
         self._tab_bar.rename_separator(sep_id, label.strip())
+
+    def _open_brain_editor(self):
+        try:
+            content = NEURAL_BRAIN_FILE.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            content = ""
+        dlg = NeuralBrainDialog(content, self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._tab_bar.update_brain_preview(dlg.get_content())
 
     def _maybe_show_whats_new(self):
         """Show the What's New dialog when the version has changed since last run."""
