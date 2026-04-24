@@ -117,7 +117,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.18.2"
+VERSION      = "2.19.0"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -373,6 +373,9 @@ class SplitBallOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "2.19.0": [
+        ("🔐", "Per-tab Claude account / login", "Sidebar now has a 🤖 Claude account section. Set a profile name (e.g. 'work', 'personal') — each profile gets its own CLAUDE_CONFIG_DIR at ~/.aide/claude-profiles/<name>/. 'claude /login' button runs interactive OAuth in that terminal using the chosen profile. Also a free-text Extra args field (e.g. --model sonnet) stored per tab."),
+    ],
     "2.18.2": [
         ("⚡", "Further CPU reductions", "Terminal tick 50ms→100ms (halves paint-poll wakeups). mark_visible / mark_kbd_focus guarded against no-op calls so setStyleSheet doesn't run every 500ms per card. _update_waiting_badge guarded against unchanged counts so setWindowTitle/setBadgeNumber only run when the count actually changes."),
     ],
@@ -1229,6 +1232,8 @@ class TermSession:
         self.custom_title=""; self.notes=""; self.tasks=""; self.tags:list=[]; self.variables:Dict[str,str]={}
         self.autostart_dir:str=""; self.autostart_cmd:str=""
         self.github_token_name:str=""   # name of the token in vault to inject as GITHUB_TOKEN/GH_TOKEN
+        self.claude_profile:str=""      # name used for CLAUDE_CONFIG_DIR; empty = shared ~/.claude/
+        self.claude_args:str=""         # extra CLI args appended when launching `claude`
         self.browser_url:str=""; self.watching=False
         self.info=TermInfo()
         self.screen=_ScrollScreen(cols,rows)
@@ -1477,6 +1482,7 @@ class TermSession:
         d = dict(custom_title=self.custom_title,notes=self.notes,tasks=self.tasks,tags=self.tags,
                  autostart_dir=self.autostart_dir,autostart_cmd=self.autostart_cmd,
                  github_token_name=self.github_token_name,
+                 claude_profile=self.claude_profile, claude_args=self.claude_args,
                  browser_url=self.browser_url,watching=self.watching,
                  cwd=self.info.cwd_full or self.info.cwd,
                  ssh_host=self.info.ssh_host,last_cmd=self.info.last_cmd)
@@ -1490,6 +1496,7 @@ class TermSession:
         s.tasks=d.get("tasks",""); s.tags=d.get("tags",[]); s.variables={}  # populated from vault on unlock
         s.autostart_dir=d.get("autostart_dir",""); s.autostart_cmd=d.get("autostart_cmd","")
         s.github_token_name=d.get("github_token_name","")
+        s.claude_profile=d.get("claude_profile",""); s.claude_args=d.get("claude_args","")
         s.browser_url=d.get("browser_url",""); s.watching=d.get("watching",False)
         stored_cwd=d.get("cwd","")
         s.info.cwd_full=stored_cwd
@@ -2947,6 +2954,7 @@ class NotesPanel(QWidget):
     vault_unlock_requested = pyqtSignal()
     vault_lock_requested   = pyqtSignal()
     github_token_changed   = pyqtSignal(str)   # emits new token name ("" = none)
+    claude_login_requested = pyqtSignal()      # user clicked Login button for current tab
 
     def __init__(self,parent=None):
         super().__init__(parent); self.setMinimumWidth(180); self.resize(240,self.height())
@@ -3091,6 +3099,37 @@ class NotesPanel(QWidget):
         self._gh_token_combo.currentTextChanged.connect(
             lambda t: self.github_token_changed.emit("" if t == "(none)" else t))
         al.addWidget(self._gh_token_combo)
+
+        # ── Claude account (per-tab CLAUDE_CONFIG_DIR) ────────────────────────
+        claude_hdr = QLabel("🤖  Claude account")
+        claude_hdr.setStyleSheet(f"color:{C_ACCENT.name()};font-weight:bold;font-size:12px;"
+                                 f"background:transparent;padding-top:10px;")
+        al.addWidget(claude_hdr)
+        claude_hint = QLabel("Per-tab profile → separate CLAUDE_CONFIG_DIR. "
+                             "Each profile logs in once; blank = shared ~/.claude/.")
+        claude_hint.setStyleSheet(f"color:{C_MUTED.name()};font-size:10px;background:transparent;")
+        claude_hint.setWordWrap(True); al.addWidget(claude_hint)
+        prof_lbl = QLabel("Profile name"); prof_lbl.setStyleSheet(_auto_lbl_css)
+        al.addWidget(prof_lbl)
+        self._claude_profile = QLineEdit()
+        self._claude_profile.setPlaceholderText("e.g. work, personal  (blank = default)")
+        self._claude_profile.setStyleSheet(_auto_edit_css)
+        al.addWidget(self._claude_profile)
+        args_lbl = QLabel("Extra `claude` args"); args_lbl.setStyleSheet(_auto_lbl_css)
+        al.addWidget(args_lbl)
+        self._claude_args = QLineEdit()
+        self._claude_args.setPlaceholderText("e.g. --model sonnet  (optional)")
+        self._claude_args.setStyleSheet(_auto_edit_css)
+        al.addWidget(self._claude_args)
+        login_btn = QPushButton("🔐  claude /login")
+        login_btn.setStyleSheet(
+            f"QPushButton{{background:{C_SURFACE.name()};color:{C_FG.name()};"
+            f"border:none;border-radius:3px;font-size:11px;padding:4px 8px;}}"
+            f"QPushButton:hover{{background:{C_ACCENT.name()}44;color:{C_ACCENT.name()};}}")
+        login_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        login_btn.clicked.connect(lambda: self.claude_login_requested.emit())
+        al.addWidget(login_btn)
+
         al.addStretch()
 
         splitter.addWidget(notes_w); splitter.addWidget(tasks_w)
@@ -3170,7 +3209,8 @@ class NotesPanel(QWidget):
             self._numbering=False
 
     def load(self,notes:str,tasks:str="",variables:Optional[Dict[str,str]]=None,
-             autostart_dir:str="",autostart_cmd:str="",github_token_name:str=""):
+             autostart_dir:str="",autostart_cmd:str="",github_token_name:str="",
+             claude_profile:str="",claude_args:str=""):
         self._notes_edit.setPlainText(notes)
         self._numbering=True
         self._tasks_edit.setPlainText(tasks)
@@ -3186,6 +3226,8 @@ class NotesPanel(QWidget):
         idx = self._gh_token_combo.findText(github_token_name) if github_token_name else 0
         self._gh_token_combo.setCurrentIndex(max(0, idx))
         self._gh_token_combo.blockSignals(False)
+        self._claude_profile.setText(claude_profile or "")
+        self._claude_args.setText(claude_args or "")
 
     def set_github_token_names(self, names: list, current: str):
         """Populate the per-tab token selector with available token names."""
@@ -3206,6 +3248,8 @@ class NotesPanel(QWidget):
     def get_tasks(self)->str: return self._tasks_edit.toPlainText()
     def get_autostart_dir(self)->str: return self._auto_dir.text().strip()
     def get_autostart_cmd(self)->str: return self._auto_cmd.text().strip()
+    def get_claude_profile(self)->str: return self._claude_profile.text().strip()
+    def get_claude_args(self)->str:    return self._claude_args.text().strip()
     def get_variables(self)->Optional[Dict[str,str]]:
         """Return current variables, or None if the vault is locked.
 
@@ -4044,6 +4088,7 @@ class AIDEWindow(QMainWindow):
         self._notes_panel.vault_unlock_requested.connect(self._on_vault_unlock_requested)
         self._notes_panel.vault_lock_requested.connect(self._on_vault_lock_requested)
         self._notes_panel.github_token_changed.connect(self._on_gh_token_selected)
+        self._notes_panel.claude_login_requested.connect(self._on_claude_login)
         self._neural_panel=NeuralPanel(self._neural_bus)
         self._neural_panel.set_url(f"http://127.0.0.1:{self._neural_port}")
         self._neural_panel.setVisible(False)
@@ -4079,6 +4124,8 @@ class AIDEWindow(QMainWindow):
         s.tasks = self._notes_panel.get_tasks()
         s.autostart_dir = self._notes_panel.get_autostart_dir()
         s.autostart_cmd = self._notes_panel.get_autostart_cmd()
+        s.claude_profile = self._notes_panel.get_claude_profile()
+        s.claude_args    = self._notes_panel.get_claude_args()
         if self._vault.is_unlocked():
             s.github_token_name = self._notes_panel.get_github_token_name()
         v = self._notes_panel.get_variables()
@@ -4092,7 +4139,8 @@ class AIDEWindow(QMainWindow):
         token_names = list(self._vault.get_github_tokens().keys()) if self._vault.is_unlocked() else []
         self._notes_panel.set_github_token_names(token_names, s.github_token_name)
         self._notes_panel.load(s.notes, s.tasks, s.variables,
-                               s.autostart_dir, s.autostart_cmd, s.github_token_name)
+                               s.autostart_dir, s.autostart_cmd, s.github_token_name,
+                               s.claude_profile, s.claude_args)
 
     def _set_focused_pane(self, idx: int):
         """Change which pane is focused, syncing notes panel as needed."""
@@ -4195,6 +4243,10 @@ class AIDEWindow(QMainWindow):
         self._update_status()
 
     # ── tab lifecycle ──────────────────────────────────────────────────────────
+    def _claude_profile_dir(self, profile: str) -> str:
+        """Resolve a profile name to an absolute CLAUDE_CONFIG_DIR path."""
+        return str(Path.home() / ".aide" / "claude-profiles" / profile)
+
     def _env_with_vars(self, session: "TermSession") -> dict:
         """Merge config env_overrides, this session's GitHub token, vault variables, and neural bus."""
         env = dict(self.config.env_overrides)
@@ -4209,6 +4261,12 @@ class AIDEWindow(QMainWindow):
             if token:
                 env["GITHUB_TOKEN"] = token
                 env["GH_TOKEN"] = token
+        # Per-tab Claude profile → own CLAUDE_CONFIG_DIR
+        prof = getattr(session, "claude_profile", "")
+        if prof:
+            d = self._claude_profile_dir(prof)
+            Path(d).mkdir(parents=True, exist_ok=True)
+            env["CLAUDE_CONFIG_DIR"] = d
         env.update(session.variables)   # vault vars take precedence
         return env
 
@@ -4998,6 +5056,24 @@ class AIDEWindow(QMainWindow):
             if r:
                 self.config.shell=r["shell"]; self.config.env_overrides=r["env_overrides"]
                 self.config.save(); self._info_bar._refresh()
+
+    def _on_claude_login(self):
+        """User clicked 'claude /login' in notes panel — export CLAUDE_CONFIG_DIR
+        for this tab's profile and run `claude /login` in the live shell."""
+        self._sync_notes_from_panel()
+        tid = self._focused_tid()
+        if tid < 0 or tid not in self.sessions: return
+        s = self.sessions[tid]
+        if not s.alive:
+            QMessageBox.warning(self, "claude /login", "This terminal is not alive."); return
+        args = f" {s.claude_args}" if s.claude_args else ""
+        if s.claude_profile:
+            d = self._claude_profile_dir(s.claude_profile)
+            Path(d).mkdir(parents=True, exist_ok=True)
+            cmd = f'export CLAUDE_CONFIG_DIR={shlex.quote(d)}; claude /login{args}\n'
+        else:
+            cmd = f'claude /login{args}\n'
+        s.write(cmd.encode("utf-8"))
 
     def _on_gh_token_selected(self, name: str):
         """User picked a new token in the notes panel — persist + re-export into live shell."""
