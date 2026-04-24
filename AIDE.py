@@ -383,8 +383,8 @@ class NeuralRailOverlay(QWidget):
         self._anim_to_y   = 0
         self._anim_prog   = -1.0   # -1 = idle
         self._timer = QTimer(self)
+        self._timer.setSingleShot(False)
         self._timer.timeout.connect(self._tick)
-        self._timer.start(25)
         self.resize(viewport.size())
         self.raise_()
 
@@ -396,13 +396,16 @@ class NeuralRailOverlay(QWidget):
         self._anim_from_y = from_y
         self._anim_to_y   = to_y
         self._anim_prog   = 0.0
+        if not self._timer.isActive():
+            self._timer.start(25)
 
     def _tick(self):
         if self._anim_prog < 0:
-            return
+            self._timer.stop(); return
         self._anim_prog = min(1.0, self._anim_prog + 0.033)  # ~30 steps ≈ 750ms
         if self._anim_prog >= 1.0:
             self._anim_prog = -1.0
+            self._timer.stop()
         self.update()
 
     def paintEvent(self, ev):
