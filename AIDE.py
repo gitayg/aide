@@ -116,7 +116,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "3.0.0"
+VERSION      = "3.0.2"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -4480,35 +4480,51 @@ class GitHubTokensDialog(QDialog):
 class PermissionDialog(QDialog):
     """Modal dialog shown when Claude Code requests permission for a tool call."""
 
-    def __init__(self, tool_name: str, tool_input: dict, parent=None):
+    def __init__(self, tool_name: str, tool_input: dict,
+                 terminal_name: str = "", received_at: float = 0.0, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Claude Code — Permission Request")
         self.setStyleSheet(_dlg_ss())
-        self.setFixedWidth(520)
-        self._approved = False
+        self.setFixedWidth(540)
+        self._decision = "deny"  # "allow" | "always_session" | "always_all" | "deny"
 
         from PyQt6.QtWidgets import QPlainTextEdit
         lay = QVBoxLayout(self)
         lay.setContentsMargins(20, 18, 20, 18)
         lay.setSpacing(10)
 
-        hdr = QLabel(f"🛡️  Tool permission request")
-        hdr.setStyleSheet(f"color:{C_ACCENT.name()};font-weight:bold;font-size:13px;")
-        lay.addWidget(hdr)
+        # ── header ────────────────────────────────────────────────────────────
+        hdr_row = QHBoxLayout()
+        hdr = QLabel(f"🛡️  {tool_name}")
+        hdr.setStyleSheet(f"color:{C_ACCENT.name()};font-weight:bold;font-size:13px;"
+                          f"background:transparent;")
+        hdr_row.addWidget(hdr)
+        hdr_row.addStretch()
 
-        tool_lbl = QLabel(f"<b>{tool_name}</b>")
-        tool_lbl.setStyleSheet(f"color:{C_FG.name()};font-size:12px;")
-        lay.addWidget(tool_lbl)
+        meta_parts = []
+        if received_at:
+            delta = time.time() - received_at
+            meta_parts.append("just now" if delta < 2 else f"{int(delta)}s ago")
+        if terminal_name:
+            meta_parts.append(terminal_name)
+        if meta_parts:
+            meta = QLabel("  ·  ".join(meta_parts))
+            meta.setStyleSheet(f"color:{C_MUTED.name()};font-size:10px;background:transparent;")
+            hdr_row.addWidget(meta)
+        lay.addLayout(hdr_row)
 
-        args_box = QPlainTextEdit(json.dumps(tool_input, indent=2))
-        args_box.setReadOnly(True)
-        args_box.setStyleSheet(
-            f"QPlainTextEdit{{background:{C_BG.name()};color:{C_FG.name()};"
-            f"border:1px solid {C_SURFACE.name()};border-radius:4px;"
-            f"font-family:{FONT_FAMILY};font-size:11px;padding:6px;}}")
-        args_box.setMaximumHeight(240)
-        lay.addWidget(args_box)
+        sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet(f"background:{C_SURFACE.name()};max-height:1px;")
+        lay.addWidget(sep)
 
+        # ── tool-aware content ────────────────────────────────────────────────
+        lay.addWidget(self._build_detail(tool_name, tool_input))
+
+        sep2 = QFrame(); sep2.setFrameShape(QFrame.Shape.HLine)
+        sep2.setStyleSheet(f"background:{C_SURFACE.name()};max-height:1px;")
+        lay.addWidget(sep2)
+
+        # ── primary buttons ───────────────────────────────────────────────────
         btn_row = QHBoxLayout(); btn_row.setSpacing(8)
 
         allow_btn = QPushButton("✅  Allow")
@@ -4518,7 +4534,7 @@ class PermissionDialog(QDialog):
             f"QPushButton:hover{{background:#b9f5b4;}}")
         allow_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         allow_btn.setDefault(True)
-        allow_btn.clicked.connect(self._allow)
+        allow_btn.clicked.connect(lambda: self._decide("allow"))
 
         deny_btn = QPushButton("🚫  Deny")
         deny_btn.setStyleSheet(
@@ -4526,18 +4542,111 @@ class PermissionDialog(QDialog):
             f"border-radius:4px;font-size:12px;font-weight:bold;padding:6px 18px;}}"
             f"QPushButton:hover{{background:#f5a5b8;}}")
         deny_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        deny_btn.clicked.connect(self._deny)
+        deny_btn.clicked.connect(lambda: self._decide("deny"))
 
         btn_row.addWidget(allow_btn)
         btn_row.addWidget(deny_btn)
         btn_row.addStretch()
         lay.addLayout(btn_row)
 
-    def _allow(self): self._approved = True;  self.accept()
-    def _deny(self):  self._approved = False; self.reject()
+        # ── always-allow buttons ──────────────────────────────────────────────
+        always_row = QHBoxLayout(); always_row.setSpacing(6)
+        _always_ss = (f"QPushButton{{background:transparent;color:{C_MUTED.name()};"
+                      f"border:1px solid {C_SURFACE.name()};border-radius:3px;"
+                      f"font-size:10px;padding:3px 10px;}}"
+                      f"QPushButton:hover{{color:{C_ACCENT.name()};"
+                      f"border-color:{C_ACCENT.name()};}}")
+
+        if terminal_name:
+            btn_sess = QPushButton(f"📌  Always allow — {terminal_name}")
+            btn_sess.setStyleSheet(_always_ss)
+            btn_sess.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn_sess.clicked.connect(lambda: self._decide("always_session"))
+            always_row.addWidget(btn_sess)
+
+        btn_all = QPushButton("📌  Always allow — all agents")
+        btn_all.setStyleSheet(_always_ss)
+        btn_all.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_all.clicked.connect(lambda: self._decide("always_all"))
+        always_row.addWidget(btn_all)
+        always_row.addStretch()
+        lay.addLayout(always_row)
+
+    def _decide(self, decision: str):
+        self._decision = decision
+        self.accept() if decision != "deny" else self.reject()
 
     @property
-    def approved(self) -> bool: return self._approved
+    def decision(self) -> str: return self._decision
+
+    @property
+    def approved(self) -> bool: return self._decision != "deny"
+
+    def _build_detail(self, tool_name: str, tool_input: dict) -> QWidget:
+        from PyQt6.QtWidgets import QPlainTextEdit
+        _code_ss = (f"QPlainTextEdit{{background:{C_BG.name()};color:{C_FG.name()};"
+                    f"border:1px solid {C_SURFACE.name()};border-radius:4px;"
+                    f"font-family:{FONT_FAMILY};font-size:11px;padding:6px;}}")
+
+        w = QWidget(); lay = QVBoxLayout(w)
+        lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(6)
+
+        def code_box(text, max_h=160):
+            b = QPlainTextEdit(text); b.setReadOnly(True)
+            b.setStyleSheet(_code_ss); b.setMaximumHeight(max_h)
+            return b
+
+        def lbl(text, col=None):
+            l = QLabel(text)
+            l.setStyleSheet(f"color:{col or C_MUTED.name()};font-size:11px;"
+                            f"background:transparent;"); l.setWordWrap(True)
+            return l
+
+        if tool_name in ("Bash", "bash"):
+            desc = tool_input.get("description", "")
+            cmd  = tool_input.get("command", "")
+            if desc: lay.addWidget(lbl(desc, C_FG.name()))
+            lay.addWidget(code_box(cmd))
+
+        elif tool_name in ("Edit", "MultiEdit"):
+            fpath = tool_input.get("file_path", "")
+            lay.addWidget(lbl(f"📄  {fpath}", C_ACCENT.name()))
+            old = tool_input.get("old_string", "")
+            new = tool_input.get("new_string", "")
+            if old: lay.addWidget(lbl("Remove:", "#f38ba8")); lay.addWidget(code_box(old, 100))
+            if new: lay.addWidget(lbl("Add:",    "#a6e3a1")); lay.addWidget(code_box(new, 100))
+
+        elif tool_name == "Write":
+            fpath   = tool_input.get("file_path", "")
+            content = tool_input.get("content", "")
+            lines   = content.splitlines()
+            preview = "\n".join(lines[:30]) + ("\n…" if len(lines) > 30 else "")
+            lay.addWidget(lbl(f"📄  {fpath}", C_ACCENT.name()))
+            lay.addWidget(code_box(preview, 160))
+
+        elif tool_name in ("Read", "Glob", "Grep", "LS"):
+            key  = next((k for k in ("file_path", "pattern", "path") if k in tool_input), "")
+            val  = tool_input.get(key, json.dumps(tool_input))
+            lay.addWidget(lbl(f"📄  {val}", C_ACCENT.name()))
+
+        elif tool_name in ("WebFetch", "web_fetch"):
+            url    = tool_input.get("url", "")
+            prompt = tool_input.get("prompt", "")
+            lay.addWidget(lbl(f"🌐  {url}", C_ACCENT.name()))
+            if prompt: lay.addWidget(lbl(prompt))
+
+        elif tool_name in ("WebSearch", "web_search"):
+            lay.addWidget(lbl(f"🔍  {tool_input.get('query', '')}", C_FG.name()))
+
+        else:
+            lines = []
+            for k, v in tool_input.items():
+                v_str = str(v)
+                if len(v_str) > 120: v_str = v_str[:120] + "…"
+                lines.append(f"{k}: {v_str}")
+            lay.addWidget(code_box("\n".join(lines), 200))
+
+        return w
 
 
 class AIDEWindow(QMainWindow):
@@ -4565,6 +4674,7 @@ class AIDEWindow(QMainWindow):
         self._show_screenshot_overlay=True  # only the first _switch_to (during session restore) gets the overlay
         self._ball_overlay=SplitBallOverlay(self)
         self._ball_overlay.hide()
+        self._perm_always_allow: Dict[str, set] = {}  # tool_name → {"all"|"session:{tid}"}
         self._neural_bus = NeuralBus(self._on_neural_request,
                                      on_permission=self._on_permission_request)
         self._mcp_perm_signal.connect(self._show_permission_dialog)
@@ -5254,17 +5364,51 @@ class AIDEWindow(QMainWindow):
     # ── MCP permission prompt ─────────────────────────────────────────────────
 
     def _on_permission_request(self, perm_id: str, args: dict):
-        """Called from NeuralBus/MCP thread — emits signal to cross into Qt main thread."""
-        self._mcp_perm_signal.emit(perm_id, args)
+        """Called from NeuralBus/MCP thread — stamps timestamp, then crosses to Qt main thread."""
+        payload = dict(args)
+        payload["_received_at"] = time.time()
+        self._mcp_perm_signal.emit(perm_id, payload)
+
+    def _find_requesting_terminal(self):
+        """Best-effort: find the terminal whose Claude is currently working."""
+        working = [(tid, s) for tid, s in self.sessions.items()
+                   if s.claude_working or s.claude_thinking]
+        if len(working) == 1:
+            return working[0]
+        ftid = self._focused_tid()
+        if ftid >= 0 and ftid in self.sessions:
+            return ftid, self.sessions[ftid]
+        return -1, None
 
     def _show_permission_dialog(self, perm_id: str, args: object):
+        tool_name   = args.get("tool_name", "unknown")
+        tool_input  = args.get("tool_input", {})
+        received_at = args.get("_received_at", 0.0)
+
+        tab_id, session = self._find_requesting_terminal()
+        terminal_name = session.effective_title() if session else ""
+
+        # Check always-allow rules before showing the dialog
+        scopes = self._perm_always_allow.get(tool_name, set())
+        if "all" in scopes or (tab_id >= 0 and f"session:{tab_id}" in scopes):
+            self._neural_bus.resolve_permission(perm_id, True)
+            return
+
         dlg = PermissionDialog(
-            tool_name=args.get("tool_name", "unknown"),
-            tool_input=args.get("tool_input", {}),
+            tool_name=tool_name, tool_input=tool_input,
+            terminal_name=terminal_name, received_at=received_at,
             parent=self,
         )
         dlg.exec()
-        self._neural_bus.resolve_permission(perm_id, dlg.approved)
+
+        decision = dlg.decision
+        approved = decision != "deny"
+        if decision == "always_session" and tab_id >= 0:
+            self._perm_always_allow.setdefault(tool_name, set()).add(f"session:{tab_id}")
+        elif decision == "always_all":
+            self._perm_always_allow.setdefault(tool_name, set()).add("all")
+
+        self._neural_bus.resolve_permission(perm_id, approved)
 
     def _write_mcp_config(self):
         settings_path = Path.home() / ".claude" / "settings.json"
