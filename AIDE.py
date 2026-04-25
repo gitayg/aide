@@ -409,7 +409,6 @@ class NeuralRailOverlay(QWidget):
         self.update()
 
     def paintEvent(self, ev):
-        import math
         bus_cards = [c for c in self._cards if c.session.neural_on_bus and c.isVisible()]
         if not bus_cards and self._anim_prog < 0:
             return
@@ -426,13 +425,21 @@ class NeuralRailOverlay(QWidget):
         x = self._X
         rail_col = C_ACCENT
 
+        # Vertical spine — extends a few px past the outermost dots
         if len(ys) >= 2:
             p.setPen(QPen(rail_col, 2))
             p.drawLine(x, ys[0], x, ys[-1])
         elif len(ys) == 1:
             p.setPen(QPen(rail_col, 2))
-            p.drawLine(x, max(0, ys[0] - 5), x, ys[0] + 5)
+            p.drawLine(x, max(0, ys[0] - 10), x, ys[0] + 10)
 
+        # Horizontal tap lines from rail into the card's icon area
+        tap_col = QColor(rail_col); tap_col.setAlpha(160)
+        for y in ys:
+            p.setPen(QPen(tap_col, 1))
+            p.drawLine(x, y, x + 14, y)
+
+        # Station dots on top of tap lines
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(rail_col)
         for y in ys:
@@ -2333,12 +2340,8 @@ class TabCard(QFrame):
             self._icon_lbl.setText("?" if getattr(self,"_blink_phase",False) else " ")
             self._icon_lbl.setStyleSheet(f"color:{C_ACCENT.name()};font-size:14px;font-weight:bold;background:transparent;")
         else:
-            if s.neural_on_bus:
-                self._icon_lbl.setText("🤖")
-                self._icon_lbl.setStyleSheet(f"font-size:10px;background:transparent;")
-            else:
-                self._icon_lbl.setText("")
-                self._icon_lbl.setStyleSheet("background:transparent;")
+            self._icon_lbl.setText("")
+            self._icon_lbl.setStyleSheet("background:transparent;")
         # Title label: tags (accent, optional) + title text
         _acc = C_ACCENT.name()
         show_tags = getattr(self.cfg, "show_tags", True)
