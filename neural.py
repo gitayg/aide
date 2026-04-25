@@ -2,19 +2,24 @@
 
 Runs a local HTTP server so agents (Claude Code sessions) can register,
 announce their current task, and send messages to each other.
-All inter-agent messages require human approval before delivery.
+Also serves an MCP SSE endpoint so Claude Code can use AIDE as its
+--permission-prompt-tool, routing tool-permission requests to the human
+via a Qt dialog.
 """
 from __future__ import annotations
 
 import json
 import os
+import queue
 import stat
 import threading
 import time
 import uuid
 from dataclasses import dataclass, field, asdict
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from socketserver import ThreadingMixIn
 from typing import Callable, Dict, List, Optional
+from urllib.parse import urlparse, parse_qs
 
 
 # ── Data models ──────────────────────────────────────────────────────────────
@@ -42,19 +47,33 @@ class NeuralMessage:
     status:       str   = "delivered"  # delivered | read
 
 
+# ── Threaded server ──────────────────────────────────────────────────────────
+
+class _ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
+    daemon_threads = True
+
+
 # ── Bus ──────────────────────────────────────────────────────────────────────
 
 class NeuralBus:
     """HTTP message bus. Call start() to bind a port and return it."""
 
-    def __init__(self, on_message: Callable[[NeuralMessage], None]):
+    def __init__(self, on_message: Callable[[NeuralMessage], None],
+                 on_permission: Optional[Callable[[str, dict], None]] = None):
         self._agents:     Dict[str, NeuralAgent]   = {}  # token → agent
         self._by_session: Dict[int, str]            = {}  # session_id → token
         self._messages:   List[NeuralMessage]       = []
         self._on_message  = on_message
         self._lock        = threading.RLock()
-        self._server: Optional[HTTPServer] = None
+        self._server: Optional[_ThreadedHTTPServer] = None
         self.port: int = 0
+
+        # MCP permission-prompt state
+        self._on_permission = on_permission
+        self._mcp_lock     = threading.Lock()
+        self._mcp_sessions: Dict[str, queue.Queue] = {}   # sessionId → SSE queue
+        self._perm_events:  Dict[str, threading.Event] = {}
+        self._perm_results: Dict[str, dict] = {}
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
 
@@ -82,19 +101,130 @@ class NeuralBus:
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers(); self.wfile.write(body)
 
+            # ── MCP SSE stream ─────────────────────────────────────────────
+            def _mcp_sse(self, sid: str):
+                q: queue.Queue = queue.Queue()
+                with bus._mcp_lock:
+                    bus._mcp_sessions[sid] = q
+                # Tell Claude where to POST requests for this session
+                endpoint_url = f"http://127.0.0.1:{bus.port}/mcp?sessionId={sid}"
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Connection", "keep-alive")
+                self.end_headers()
+                try:
+                    self.wfile.write(
+                        f"event: endpoint\ndata: {endpoint_url}\n\n".encode())
+                    self.wfile.flush()
+                    while True:
+                        try:
+                            msg = q.get(timeout=15)
+                            if msg is None:   # sentinel — close stream
+                                break
+                            self.wfile.write(
+                                f"event: message\ndata: {json.dumps(msg)}\n\n".encode())
+                            self.wfile.flush()
+                        except queue.Empty:
+                            self.wfile.write(b": keepalive\n\n")
+                            self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                finally:
+                    with bus._mcp_lock:
+                        bus._mcp_sessions.pop(sid, None)
+
+            # ── MCP JSON-RPC POST ──────────────────────────────────────────
+            def _mcp_post(self, sid: str):
+                d    = self._body()
+                meth = d.get("method", "")
+                rid  = d.get("id")
+
+                if meth == "initialize":
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Mcp-Session-Id", sid)
+                    result = json.dumps({
+                        "jsonrpc": "2.0", "id": rid,
+                        "result": {
+                            "protocolVersion": "2024-11-05",
+                            "capabilities": {"tools": {}},
+                            "serverInfo": {"name": "aide-neural", "version": "3.0.0"},
+                        }
+                    }).encode()
+                    self.send_header("Content-Length", str(len(result)))
+                    self.end_headers(); self.wfile.write(result)
+                    return
+
+                if meth == "notifications/initialized":
+                    self.send_response(202); self.end_headers(); return
+
+                if meth == "tools/list":
+                    self._ok({
+                        "jsonrpc": "2.0", "id": rid,
+                        "result": {"tools": [{
+                            "name": "permission_prompt",
+                            "description": "Ask the human whether to allow a Claude Code tool call.",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "tool_name":  {"type": "string"},
+                                    "tool_input": {"type": "object"},
+                                },
+                                "required": ["tool_name", "tool_input"],
+                            }
+                        }]}
+                    }); return
+
+                if meth == "tools/call" and d.get("params", {}).get("name") == "permission_prompt":
+                    inp     = d.get("params", {}).get("arguments", {})
+                    perm_id = uuid.uuid4().hex[:8]
+                    ev      = threading.Event()
+                    with bus._mcp_lock:
+                        bus._perm_events[perm_id] = ev
+                    # Ask the Qt main thread (non-blocking from our side)
+                    if bus._on_permission:
+                        bus._on_permission(perm_id, inp)
+                    approved = ev.wait(timeout=300)
+                    with bus._mcp_lock:
+                        res = bus._perm_results.pop(perm_id, None)
+                        bus._perm_events.pop(perm_id, None)
+                    if not approved or res is None:
+                        decision = "deny"
+                    else:
+                        decision = res.get("decision", "deny")
+                    behavior = "allow" if decision == "allow" else "deny"
+                    self._ok({
+                        "jsonrpc": "2.0", "id": rid,
+                        "result": {
+                            "content": [{"type": "text", "text": behavior}],
+                            "behavior": behavior,
+                        }
+                    }); return
+
+                self._err(404, f"unknown method: {meth}")
+
             def do_POST(self):
                 try:
-                    d = self._body()
-                    p = self.path
+                    parsed = urlparse(self.path)
+                    p      = parsed.path
+                    qs     = parse_qs(parsed.query)
                     if p == "/register":
+                        d = self._body()
                         token = bus.register(int(d["session_id"]), d["name"], d.get("task", ""))
                         self._ok({"token": token})
                     elif p == "/task":
+                        d = self._body()
                         bus.update_task(d["token"], d["task"]); self._ok({"ok": True})
                     elif p == "/send":
+                        d = self._body()
                         mid = bus.send(d["token"], int(d["to"]), d["content"])
                         if mid: self._ok({"id": mid, "status": "pending"})
                         else:   self._err(404, "target agent not found")
+                    elif p == "/mcp":
+                        sid = (qs.get("sessionId") or [""])[0] or \
+                              self.headers.get("Mcp-Session-Id", "")
+                        self._mcp_post(sid)
                     else:
                         self._err(404, "not found")
                 except Exception as e:
@@ -102,15 +232,20 @@ class NeuralBus:
 
             def do_GET(self):
                 try:
-                    tok = self.headers.get("X-Token", "")
-                    p   = self.path
-                    if p == "/agents":  self._ok(bus.list_agents(tok))
-                    elif p == "/inbox": self._ok(bus.get_inbox(tok))
-                    else:               self._err(404, "not found")
+                    parsed = urlparse(self.path)
+                    p      = parsed.path
+                    qs     = parse_qs(parsed.query)
+                    tok    = self.headers.get("X-Token", "")
+                    if p == "/agents":       self._ok(bus.list_agents(tok))
+                    elif p == "/inbox":      self._ok(bus.get_inbox(tok))
+                    elif p == "/mcp/sse":
+                        sid = (qs.get("sessionId") or [uuid.uuid4().hex])[0]
+                        self._mcp_sse(sid)
+                    else:                    self._err(404, "not found")
                 except Exception as e:
                     self._err(400, str(e))
 
-        self._server = HTTPServer(("127.0.0.1", 0), _Handler)
+        self._server = _ThreadedHTTPServer(("127.0.0.1", 0), _Handler)
         self.port    = self._server.server_address[1]
         threading.Thread(target=self._server.serve_forever, daemon=True).start()
         return self.port
@@ -118,6 +253,16 @@ class NeuralBus:
     def stop(self):
         if self._server:
             self._server.shutdown()
+
+    # ── MCP permission resolution ─────────────────────────────────────────────
+
+    def resolve_permission(self, perm_id: str, approved: bool):
+        """Called from the Qt main thread after the human decides."""
+        with self._mcp_lock:
+            ev = self._perm_events.get(perm_id)
+            self._perm_results[perm_id] = {"decision": "allow" if approved else "deny"}
+        if ev:
+            ev.set()
 
     # ── agent management ──────────────────────────────────────────────────────
 

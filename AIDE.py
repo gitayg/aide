@@ -116,7 +116,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "2.23.0"
+VERSION      = "3.0.0"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -456,6 +456,11 @@ class NeuralRailOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "3.0.0": [
+        ("🛡️", "MCP permission-prompt server", "AIDE now serves an MCP SSE endpoint on the Neural Bus. Claude Code sessions launched with --permission-prompt-tool mcp__aide__permission_prompt route every tool-permission request to a native AIDE dialog — you see the tool name and arguments and click Allow or Deny. AIDE auto-writes the MCP server entry to ~/.claude/settings.json on startup."),
+        ("↩", "Double-click terminal sends Enter", "Double-clicking anywhere in a terminal area sends an Enter keystroke — useful for quickly confirming Claude Code prompts without reaching for the keyboard."),
+        ("💾", "Auto-backup on upgrade", "When AIDE detects a version change it writes versioned snapshots of session.json and neural_brain.md to ~/.aide/ (e.g. session.backup-2-23-0.json) before applying the update — so all terminal names, tags, autostart params, tasks, and notes are preserved."),
+    ],
     "2.23.0": [
         ("🚀", "Agent startup prompt on new terminal", "Opening a new terminal shows a dialog with a ready-to-paste agent onboarding prompt: session ID, Neural Bus URL, shared brain file, workspace directory, Claude account, and neural bus operating instructions. One click copies it all."),
     ],
@@ -2058,6 +2063,10 @@ class TerminalWidget(QWidget):
             # Drag — copy selected text automatically.
             txt=self._sel_text()
             if txt: QApplication.clipboard().setText(txt)
+
+    def mouseDoubleClickEvent(self, event):
+        if self.session and self.session.alive:
+            self.session.write(b"\r")
 
     def set_font_size(self,size:int):
         self._font_n=QFont(FONT_FAMILY,size); self._font_n.setFixedPitch(True)
@@ -4465,7 +4474,72 @@ class GitHubTokensDialog(QDialog):
         return self._result
 
 
+class PermissionDialog(QDialog):
+    """Modal dialog shown when Claude Code requests permission for a tool call."""
+
+    def __init__(self, tool_name: str, tool_input: dict, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Claude Code — Permission Request")
+        self.setStyleSheet(_dlg_ss())
+        self.setFixedWidth(520)
+        self._approved = False
+
+        from PyQt6.QtWidgets import QPlainTextEdit
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 18, 20, 18)
+        lay.setSpacing(10)
+
+        hdr = QLabel(f"🛡️  Tool permission request")
+        hdr.setStyleSheet(f"color:{C_ACCENT.name()};font-weight:bold;font-size:13px;")
+        lay.addWidget(hdr)
+
+        tool_lbl = QLabel(f"<b>{tool_name}</b>")
+        tool_lbl.setStyleSheet(f"color:{C_FG.name()};font-size:12px;")
+        lay.addWidget(tool_lbl)
+
+        args_box = QPlainTextEdit(json.dumps(tool_input, indent=2))
+        args_box.setReadOnly(True)
+        args_box.setStyleSheet(
+            f"QPlainTextEdit{{background:{C_BG.name()};color:{C_FG.name()};"
+            f"border:1px solid {C_SURFACE.name()};border-radius:4px;"
+            f"font-family:{FONT_FAMILY};font-size:11px;padding:6px;}}")
+        args_box.setMaximumHeight(240)
+        lay.addWidget(args_box)
+
+        btn_row = QHBoxLayout(); btn_row.setSpacing(8)
+
+        allow_btn = QPushButton("✅  Allow")
+        allow_btn.setStyleSheet(
+            f"QPushButton{{background:#a6e3a1;color:#000;border:none;"
+            f"border-radius:4px;font-size:12px;font-weight:bold;padding:6px 18px;}}"
+            f"QPushButton:hover{{background:#b9f5b4;}}")
+        allow_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        allow_btn.setDefault(True)
+        allow_btn.clicked.connect(self._allow)
+
+        deny_btn = QPushButton("🚫  Deny")
+        deny_btn.setStyleSheet(
+            f"QPushButton{{background:#f38ba8;color:#000;border:none;"
+            f"border-radius:4px;font-size:12px;font-weight:bold;padding:6px 18px;}}"
+            f"QPushButton:hover{{background:#f5a5b8;}}")
+        deny_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        deny_btn.clicked.connect(self._deny)
+
+        btn_row.addWidget(allow_btn)
+        btn_row.addWidget(deny_btn)
+        btn_row.addStretch()
+        lay.addLayout(btn_row)
+
+    def _allow(self): self._approved = True;  self.accept()
+    def _deny(self):  self._approved = False; self.reject()
+
+    @property
+    def approved(self) -> bool: return self._approved
+
+
 class AIDEWindow(QMainWindow):
+    _mcp_perm_signal = pyqtSignal(str, object)
+
     def __init__(self,shell:str=""):
         super().__init__()
         self.config=AppConfig.load()
@@ -4488,10 +4562,13 @@ class AIDEWindow(QMainWindow):
         self._show_screenshot_overlay=True  # only the first _switch_to (during session restore) gets the overlay
         self._ball_overlay=SplitBallOverlay(self)
         self._ball_overlay.hide()
-        self._neural_bus = NeuralBus(self._on_neural_request)
+        self._neural_bus = NeuralBus(self._on_neural_request,
+                                     on_permission=self._on_permission_request)
+        self._mcp_perm_signal.connect(self._show_permission_dialog)
         self._neural_port = self._neural_bus.start()
         self._neural_client_dir = str(Path(sys.argv[0]).parent / "_neural_bin")
         write_client(self._neural_client_dir)
+        self._write_mcp_config()
         self._build_ui(); _build_keymap()
         self._start_dashboard()
         self._hotkey_bar.set_btn_active("toggle_notes", self._notes_vis)
@@ -4817,6 +4894,7 @@ class AIDEWindow(QMainWindow):
         env["AIDE_NEURAL_URL"]        = f"http://127.0.0.1:{self._neural_port}"
         env["AIDE_SESSION_ID"]        = str(session.tab_id)
         env["AIDE_NEURAL_BRAIN_FILE"] = str(NEURAL_BRAIN_FILE)
+        env["AIDE_PERMISSION_TOOL"]   = "mcp__aide__permission_prompt"
         env["PATH"]                   = f"{self._neural_client_dir}:{os.environ.get('PATH', '')}"
         # Inject this tab's GitHub token (env is set before autostart runs,
         # since autostart is sent as shell input after execvpe with env).
@@ -5170,6 +5248,35 @@ class AIDEWindow(QMainWindow):
         """Called from NeuralBus thread. Marshal to main thread with full payload."""
         _EVENT_Q.put(("neural_msg", msg.from_session, msg.to_session, msg.content))
 
+    # ── MCP permission prompt ─────────────────────────────────────────────────
+
+    def _on_permission_request(self, perm_id: str, args: dict):
+        """Called from NeuralBus/MCP thread — emits signal to cross into Qt main thread."""
+        self._mcp_perm_signal.emit(perm_id, args)
+
+    def _show_permission_dialog(self, perm_id: str, args: object):
+        dlg = PermissionDialog(
+            tool_name=args.get("tool_name", "unknown"),
+            tool_input=args.get("tool_input", {}),
+            parent=self,
+        )
+        dlg.exec()
+        self._neural_bus.resolve_permission(perm_id, dlg.approved)
+
+    def _write_mcp_config(self):
+        settings_path = Path.home() / ".claude" / "settings.json"
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            cfg = json.loads(settings_path.read_text()) if settings_path.exists() else {}
+        except Exception:
+            cfg = {}
+        mcp_servers = cfg.setdefault("mcpServers", {})
+        mcp_servers["aide"] = {
+            "type": "sse",
+            "url":  f"http://127.0.0.1:{self._neural_port}/mcp/sse",
+        }
+        settings_path.write_text(json.dumps(cfg, indent=2))
+
     def _on_neural_delivered(self, from_sid: int, to_sid: int, content: str):
         """Injects neural message into target terminal PTY and animates the rail."""
         sender_name = self._neural_bus.sender_name(from_sid)
@@ -5415,6 +5522,8 @@ class AIDEWindow(QMainWindow):
         if not (version_changed or mtime_changed):
             return
         prev_version = self.config.last_seen_version
+        if version_changed and prev_version:
+            self._backup_session_data(prev_version)
         self.config.last_seen_mtime    = current_mtime
         self.config.last_seen_version  = VERSION
         self.config.save()
@@ -5422,6 +5531,21 @@ class AIDEWindow(QMainWindow):
         if sections:
             dlg = WhatsNewDialog(sections, prev_version, self)
             dlg.exec()
+
+    def _backup_session_data(self, from_version: str):
+        """Write versioned snapshots of session.json and neural_brain.md."""
+        import shutil
+        tag = from_version.replace(".", "-")
+        pairs = [
+            (SESSION_FILE,      CONFIG_DIR / f"session.backup-{tag}.json"),
+            (NEURAL_BRAIN_FILE, CONFIG_DIR / f"neural_brain.backup-{tag}.md"),
+        ]
+        for src, dst in pairs:
+            try:
+                if src.exists():
+                    shutil.copy2(src, dst)
+            except Exception:
+                pass
 
     def _check_for_update(self):
         if getattr(self, "_git_update_checked", False): return
