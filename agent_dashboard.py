@@ -10,11 +10,10 @@ from typing import Dict, List, Optional
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QLineEdit,
-    QMenu, QDialog, QPlainTextEdit, QDialogButtonBox,
+    QDialog, QPlainTextEdit, QDialogButtonBox, QApplication,
 )
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QBrush, QCursor
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtGui import QColor, QBrush
 
 # ── Theme (mirrors AIDE.py constants) ─────────────────────────────────────────
 _BG      = "#0d1117"
@@ -83,17 +82,18 @@ _SEARCH_SS = (
     f"QLineEdit:focus{{border-color:{_ACCENT};}}"
 )
 
-_COL_DOT    = 0
-_COL_NAME   = 1
-_COL_STATUS = 2
-_COL_ACTIVE = 3
-_COL_TAGS   = 4
-_COL_DIR    = 5
-_COL_CMD    = 6
-_COL_MODEL  = 7
-_COL_TOKENS = 8
-_COL_ACCT   = 9
-_N_COLS     = 10
+_COL_DOT     = 0
+_COL_NAME    = 1
+_COL_STATUS  = 2
+_COL_ACTIVE  = 3
+_COL_TAGS    = 4
+_COL_DIR     = 5
+_COL_CMD     = 6
+_COL_MODEL   = 7
+_COL_TOKENS  = 8
+_COL_ACCT    = 9
+_COL_ACTIONS = 10
+_N_COLS      = 11
 
 
 def _fmt_age(ts: float) -> str:
@@ -206,6 +206,7 @@ class AgentTable(QWidget):
     """
 
     open_terminal  = pyqtSignal(int)
+    open_detail    = pyqtSignal(int)
     new_agent      = pyqtSignal()
     launch_agent   = pyqtSignal(int)
     send_message   = pyqtSignal(int, str)
@@ -268,27 +269,29 @@ class AgentTable(QWidget):
         self._tbl = QTableWidget(0, _N_COLS)
         self._tbl.setHorizontalHeaderLabels(
             ["●", "Name", "Status", "Last Active", "Tags", "Dir", "Command",
-             "Model", "Tokens", "Account"])
+             "Model", "Tokens", "Account", "Actions"])
         h = self._tbl.horizontalHeader()
-        h.setSectionResizeMode(_COL_DOT,    QHeaderView.ResizeMode.Fixed)
-        h.setSectionResizeMode(_COL_NAME,   QHeaderView.ResizeMode.Interactive)
-        h.setSectionResizeMode(_COL_STATUS, QHeaderView.ResizeMode.Fixed)
-        h.setSectionResizeMode(_COL_ACTIVE, QHeaderView.ResizeMode.Fixed)
-        h.setSectionResizeMode(_COL_TAGS,   QHeaderView.ResizeMode.Interactive)
-        h.setSectionResizeMode(_COL_DIR,    QHeaderView.ResizeMode.Stretch)
-        h.setSectionResizeMode(_COL_CMD,    QHeaderView.ResizeMode.Interactive)
-        h.setSectionResizeMode(_COL_MODEL,  QHeaderView.ResizeMode.Fixed)
-        h.setSectionResizeMode(_COL_TOKENS, QHeaderView.ResizeMode.Fixed)
-        h.setSectionResizeMode(_COL_ACCT,   QHeaderView.ResizeMode.Fixed)
-        self._tbl.setColumnWidth(_COL_DOT,    28)
-        self._tbl.setColumnWidth(_COL_NAME,   150)
-        self._tbl.setColumnWidth(_COL_STATUS, 110)
-        self._tbl.setColumnWidth(_COL_ACTIVE, 90)
-        self._tbl.setColumnWidth(_COL_TAGS,   110)
-        self._tbl.setColumnWidth(_COL_CMD,    160)
-        self._tbl.setColumnWidth(_COL_MODEL,  90)
-        self._tbl.setColumnWidth(_COL_TOKENS, 80)
-        self._tbl.setColumnWidth(_COL_ACCT,   80)
+        h.setSectionResizeMode(_COL_DOT,     QHeaderView.ResizeMode.Fixed)
+        h.setSectionResizeMode(_COL_NAME,    QHeaderView.ResizeMode.Interactive)
+        h.setSectionResizeMode(_COL_STATUS,  QHeaderView.ResizeMode.Fixed)
+        h.setSectionResizeMode(_COL_ACTIVE,  QHeaderView.ResizeMode.Fixed)
+        h.setSectionResizeMode(_COL_TAGS,    QHeaderView.ResizeMode.Interactive)
+        h.setSectionResizeMode(_COL_DIR,     QHeaderView.ResizeMode.Stretch)
+        h.setSectionResizeMode(_COL_CMD,     QHeaderView.ResizeMode.Interactive)
+        h.setSectionResizeMode(_COL_MODEL,   QHeaderView.ResizeMode.Fixed)
+        h.setSectionResizeMode(_COL_TOKENS,  QHeaderView.ResizeMode.Fixed)
+        h.setSectionResizeMode(_COL_ACCT,    QHeaderView.ResizeMode.Fixed)
+        h.setSectionResizeMode(_COL_ACTIONS, QHeaderView.ResizeMode.Fixed)
+        self._tbl.setColumnWidth(_COL_DOT,     28)
+        self._tbl.setColumnWidth(_COL_NAME,    150)
+        self._tbl.setColumnWidth(_COL_STATUS,  110)
+        self._tbl.setColumnWidth(_COL_ACTIVE,  90)
+        self._tbl.setColumnWidth(_COL_TAGS,    110)
+        self._tbl.setColumnWidth(_COL_CMD,     160)
+        self._tbl.setColumnWidth(_COL_MODEL,   90)
+        self._tbl.setColumnWidth(_COL_TOKENS,  80)
+        self._tbl.setColumnWidth(_COL_ACCT,    80)
+        self._tbl.setColumnWidth(_COL_ACTIONS, 170)
         h.setSortIndicatorShown(True)
         h.setSectionsClickable(True)
         self._tbl.verticalHeader().setVisible(False)
@@ -297,16 +300,17 @@ class AgentTable(QWidget):
         self._tbl.setShowGrid(True)
         self._tbl.setAlternatingRowColors(False)
         self._tbl.setStyleSheet(_TBL_SS)
-        self._tbl.verticalHeader().setDefaultSectionSize(34)
+        self._tbl.verticalHeader().setDefaultSectionSize(38)
         self._tbl.doubleClicked.connect(self._on_double_click)
-        self._tbl.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self._tbl.customContextMenuRequested.connect(self._on_context_menu)
+        self._tbl.selectionModel().selectionChanged.connect(self._on_selection_changed)
         root.addWidget(self._tbl, 1)
 
         # chat bar (hidden by default)
         self._chat_container = QWidget()
         self._chat_container.setFixedHeight(54)
         self._chat_container.setVisible(False)
+        self._chat_lay = QVBoxLayout(self._chat_container)
+        self._chat_lay.setContentsMargins(0, 0, 0, 0)
         root.addWidget(self._chat_container)
 
     # ── Public API ─────────────────────────────────────────────────────────────
@@ -461,6 +465,8 @@ class AgentTable(QWidget):
             self._tbl.setItem(row, _COL_MODEL,  _item(model_short))
             self._tbl.setItem(row, _COL_TOKENS, _item(tok_str, tokens))
             self._tbl.setItem(row, _COL_ACCT,   _item(s.get("profile", "") or "default"))
+            self._tbl.setCellWidget(row, _COL_ACTIONS,
+                                    self._make_action_btns(tid, status, s.get("name", f"Agent {tid}")))
 
             if status in ("validate", "task_error"):
                 bg = QColor(_RED + "22")
@@ -481,65 +487,61 @@ class AgentTable(QWidget):
         return item.data(Qt.ItemDataRole.UserRole) if item else -1
 
     def _on_double_click(self, index):
+        if index.column() == _COL_ACTIONS:
+            return
         tid = self._tid_at_row(index.row())
         if tid >= 0:
-            self.open_terminal.emit(tid)
+            self.open_detail.emit(tid)
 
-    def _on_context_menu(self, pos):
-        row = self._tbl.rowAt(pos.y())
-        if row < 0:
+    def _on_selection_changed(self):
+        if not self._chat_bar or not self._chat_container.isVisible():
             return
-        tid = self._tid_at_row(row)
-        if tid < 0:
+        rows = self._tbl.selectionModel().selectedRows()
+        if not rows:
+            return
+        tid = self._tid_at_row(rows[0].row())
+        if tid < 0 or tid == self._chat_tid:
             return
         s = next((x for x in self._sessions if x.get("tid") == tid), None)
-        if not s:
-            return
+        if s:
+            self._open_chat(tid, s.get("name", f"Agent {tid}"))
 
-        menu = QMenu(self)
-        menu.setStyleSheet(
-            f"QMenu{{background:{_SURFACE};color:{_FG};border:1px solid {_MUTED}33;}}"
-            f"QMenu::item:selected{{background:{_ACCENT}33;color:{_ACCENT};}}")
+    def _make_action_btns(self, tid: int, status: str, name: str) -> QWidget:
+        w = QWidget()
+        w.setStyleSheet("background:transparent;")
+        lay = QHBoxLayout(w)
+        lay.setContentsMargins(4, 2, 4, 2)
+        lay.setSpacing(4)
 
-        act_term = menu.addAction("⌨  Open Terminal")
-        act_term.triggered.connect(lambda: self.open_terminal.emit(tid))
+        _ss = (f"QPushButton{{background:{_SURFACE};color:{_FG};border:none;"
+               f"border-radius:3px;font-size:10px;padding:2px 8px;}}"
+               f"QPushButton:hover{{background:{_ACCENT}33;color:{_ACCENT};}}")
 
-        act_chat = menu.addAction("💬  Chat")
-        act_chat.triggered.connect(
-            lambda: self._open_chat(tid, s.get("name", f"Agent {tid}")))
-
-        act_launch = menu.addAction("⚡  Launch / Restart")
-        act_launch.triggered.connect(lambda: self.launch_agent.emit(tid))
-
-        menu.addSeparator()
-
-        is_val = s.get("pending_validation", False)
-        if is_val:
-            act_val = menu.addAction("✅  Clear Validation")
-            act_val.triggered.connect(lambda: self.set_validation.emit(tid, "", False))
+        if status == "waiting":
+            ans_btn = QPushButton("Answer")
+            ans_btn.setStyleSheet(_ss)
+            ans_btn.setToolTip("Open chat to answer this agent")
+            ans_btn.clicked.connect(lambda: self._open_chat(tid, name))
+            lay.addWidget(ans_btn)
         else:
-            act_val = menu.addAction("🟡  Set Pending Validation")
-            act_val.triggered.connect(
-                lambda: self._ask_validation(tid, s.get("name", ""), ""))
+            rev_btn = QPushButton("Review")
+            rev_btn.setStyleSheet(_ss)
+            rev_btn.setToolTip("Open terminal to review agent's work")
+            rev_btn.clicked.connect(lambda: self.open_terminal.emit(tid))
+            lay.addWidget(rev_btn)
 
-        # Redirect to another agent (on-demand, one-shot run)
-        others = [x for x in self._sessions if x.get("tid") != tid]
-        if others:
-            menu.addSeparator()
-            red_m = menu.addMenu("↪  Redirect task to…")
-            red_m.setStyleSheet(menu.styleSheet())
-            for other in others:
-                ot  = other.get("tid", -1)
-                on  = other.get("name", f"Agent {ot}")
-                a   = red_m.addAction(on)
-                a.triggered.connect(
-                    lambda _c, _ot=ot, _on=on:
-                    self._ask_redirect_task(_ot, _on))
-
-        menu.popup(QCursor.pos())
+        commit_btn = QPushButton("Commit")
+        commit_btn.setStyleSheet(_ss)
+        commit_btn.setToolTip("Ask agent to commit staged changes")
+        commit_btn.clicked.connect(
+            lambda: self.run_task.emit(tid, "commit your staged changes with a descriptive commit message"))
+        lay.addWidget(commit_btn)
+        lay.addStretch()
+        return w
 
     def _open_chat(self, tid: int, name: str):
         if self._chat_bar:
+            self._chat_lay.removeWidget(self._chat_bar)
             self._chat_bar.deleteLater()
             self._chat_bar = None
         if self._chat_tid == tid:
@@ -548,9 +550,7 @@ class AgentTable(QWidget):
             return
         self._chat_tid = tid
         bar = _ChatBar(name, self._chat_container)
-        lay = QVBoxLayout(self._chat_container)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.addWidget(bar)
+        self._chat_lay.addWidget(bar)
         bar.message_sent.connect(lambda msg, t=tid: self.run_task.emit(t, msg))
         bar.closed.connect(lambda: self._open_chat(tid, name))
         self._chat_bar = bar

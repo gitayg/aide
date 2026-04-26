@@ -117,7 +117,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "4.4.0"
+VERSION      = "4.5.0"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -477,6 +477,13 @@ class NeuralRailOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "4.5.0": [
+        ("📋", "Agent detail dialog on double-click", "Double-clicking an agent in the dashboard opens a notes/tasks editor dialog — edit without leaving the dashboard. 'Open Terminal' switches to the terminal view."),
+        ("⚡", "Action buttons in dashboard table", "Each row now has inline Review / Answer / Commit buttons replacing the right-click context menu."),
+        ("🔧", "Session ID no longer truncated", "ANSI escape codes in PTY output were silently splitting UUID segments mid-match. Session IDs are now extracted after stripping ANSI, and are persisted across restarts."),
+        ("📷", "No startup screenshot overlay", "The last-session screenshot is no longer shown when switching tabs on startup."),
+        ("💬", "Chat bar follows agent selection", "If the task chat bar is open, clicking a different agent row updates the chat target to that agent."),
+    ],
     "4.4.0": [
         ("⚠", "Task error shown as answer in dashboard", "When a task dispatch fails (e.g. agent not running), the Status column turns red with 'Task Error' and a tooltip shows the reason. Sending a new task clears it."),
         ("⬡", "Neural Brain indicator in agent table", "Agents connected to the Neural Brain show a ⬡ prefix on their name in the dashboard."),
@@ -1476,7 +1483,7 @@ class TermSession:
         if m:=self._URL_RE.search(text): self.info.local_url=m.group(0)
         # Only accept resume tokens that are strictly alphanumeric + hyphens/underscores.
         # This prevents malicious terminal output from injecting shell metacharacters.
-        if m:=re.search(r"claude --resume ([a-zA-Z0-9_-]+)",text):
+        if m:=re.search(r"claude --resume ([a-zA-Z0-9_-]+)",_ANSI_RE.sub('',text)):
             self.claude_resume_cmd=f"claude --resume {m.group(1)}"
         # Accumulate token counts from Claude Code's session-end summary line.
         # Matches both "Tokens: 1,234 input · 567 output" and the ≈ variant.
@@ -1661,6 +1668,7 @@ class TermSession:
                  claude_profile=self.claude_profile, claude_model=self.claude_model,
                  claude_args=self.claude_args, tokens_used=self.tokens_used,
                  github_project=self.github_project, auto_git_pull=self.auto_git_pull,
+                 claude_resume_cmd=self.claude_resume_cmd,
                  browser_url=self.browser_url,watching=self.watching,
                  cwd=self.info.cwd_full or self.info.cwd,
                  ssh_host=self.info.ssh_host,last_cmd=self.info.last_cmd)
@@ -1676,6 +1684,7 @@ class TermSession:
         s.github_token_name=d.get("github_token_name","")
         s.claude_profile=d.get("claude_profile",""); s.claude_model=d.get("claude_model","")
         s.claude_args=d.get("claude_args",""); s.tokens_used=d.get("tokens_used",0)
+        s.claude_resume_cmd=d.get("claude_resume_cmd","")
         s.github_project=d.get("github_project",""); s.auto_git_pull=d.get("auto_git_pull",False)
         s.browser_url=d.get("browser_url",""); s.watching=d.get("watching",False)
         stored_cwd=d.get("cwd","")
@@ -4762,6 +4771,69 @@ class _RestoreDialog(QDialog):
             self.close()
 
 
+class AgentEditDialog(QDialog):
+    """Quick notes/tasks editor for an agent — opened by double-clicking the dashboard table."""
+
+    def __init__(self, s: "TermSession", parent=None):
+        super().__init__(parent)
+        self._s = s
+        name = s.effective_title()
+        self.setWindowTitle(name)
+        self.setFixedWidth(540)
+        self.setStyleSheet(
+            f"QDialog{{background:{C_BG.name()};color:{C_FG.name()};}}"
+            f"QLabel{{background:transparent;}}")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 14, 16, 14)
+        lay.setSpacing(8)
+
+        hdr = QLabel(name)
+        hdr.setStyleSheet(f"color:{C_ACCENT.name()};font-size:14px;font-weight:bold;")
+        lay.addWidget(hdr)
+
+        _lbl_ss = f"color:{C_MUTED.name()};font-size:11px;"
+        _edit_ss = (f"QTextEdit{{background:{C_SURFACE.name()};color:{C_FG.name()};"
+                    f"border:1px solid {C_SURFACE.name()};border-radius:4px;"
+                    f"font-family:{FONT_FAMILY};font-size:12px;padding:4px;}}")
+
+        lay.addWidget(QLabel("Notes:", styleSheet=_lbl_ss))
+        self._notes = QTextEdit(s.notes)
+        self._notes.setFixedHeight(130)
+        self._notes.setStyleSheet(_edit_ss)
+        lay.addWidget(self._notes)
+
+        lay.addWidget(QLabel("Tasks:", styleSheet=_lbl_ss))
+        self._tasks = QTextEdit(s.tasks)
+        self._tasks.setFixedHeight(130)
+        self._tasks.setStyleSheet(_edit_ss)
+        lay.addWidget(self._tasks)
+
+        _btn_ss = (f"QPushButton{{background:{C_SURFACE.name()};color:{C_FG.name()};"
+                   f"border:none;border-radius:4px;font-size:12px;padding:5px 14px;}}"
+                   f"QPushButton:hover{{background:{C_ACCENT.name()}44;color:{C_ACCENT.name()};}}")
+
+        btn_bar = QHBoxLayout()
+        btn_bar.setSpacing(8)
+        close_btn = QPushButton("Close")
+        close_btn.setStyleSheet(_btn_ss)
+        close_btn.clicked.connect(lambda: (self._save(), self.reject()))
+        save_btn = QPushButton("Save")
+        save_btn.setStyleSheet(_btn_ss)
+        save_btn.clicked.connect(self._save)
+        open_btn = QPushButton("Open Terminal →")
+        open_btn.setStyleSheet(_btn_ss)
+        open_btn.clicked.connect(lambda: (self._save(), self.accept()))
+        btn_bar.addStretch()
+        btn_bar.addWidget(close_btn)
+        btn_bar.addWidget(save_btn)
+        btn_bar.addWidget(open_btn)
+        lay.addLayout(btn_bar)
+
+    def _save(self):
+        self._s.notes = self._notes.toPlainText()
+        self._s.tasks = self._tasks.toPlainText()
+
+
 class AIDEWindow(QMainWindow):
     _mcp_perm_signal = pyqtSignal(str, object)
 
@@ -4784,7 +4856,7 @@ class AIDEWindow(QMainWindow):
         try: self._script_mtime=self._script_path.stat().st_mtime
         except: self._script_mtime=0.0
         self._update_pending=False
-        self._show_screenshot_overlay=True  # only the first _switch_to (during session restore) gets the overlay
+        self._show_screenshot_overlay=False
         self._ball_overlay=SplitBallOverlay(self)
         self._ball_overlay.hide()
         self._perm_always_allow: Dict[str, set] = {}  # tool_name → {"all"|"session:{tid}"}
@@ -4986,6 +5058,7 @@ class AIDEWindow(QMainWindow):
         self._agent_table.send_message.connect(self._dashboard_send_message)
         self._agent_table.set_validation.connect(self._dashboard_set_validation)
         self._agent_table.run_task.connect(self._run_agent_task)
+        self._agent_table.open_detail.connect(self._dashboard_open_detail)
         self._center_stack.addWidget(self._agent_table)  # page 0
         self._center_stack.addWidget(term_area)           # page 1
         self._center_stack.setCurrentIndex(0)
@@ -5292,6 +5365,17 @@ class AIDEWindow(QMainWindow):
         if not s: return
         s.pending_validation = enabled
         s.validation_note    = note
+
+    def _dashboard_open_detail(self, tid: int):
+        s = self.sessions.get(tid)
+        if not s:
+            return
+        dlg = AgentEditDialog(s, self)
+        result = dlg.exec()
+        if result == QDialog.DialogCode.Accepted:
+            self._dashboard_open_terminal(tid)
+        if self.active_id == tid and self._focused_pane == 0:
+            self._sync_notes_to_panel(tid)
 
     def _run_agent_task(self, tid: int, task: str):
         """Run claude non-interactively (-p) for *task* in session tid.
