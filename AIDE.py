@@ -117,7 +117,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "4.8.4"
+VERSION      = "4.8.5"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -503,6 +503,9 @@ class NeuralRailOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "4.8.5": [
+        ("⏹", "Stream finalize — no more stuck bubbles", "Three guards against streams that don't return: (1) chat panel always re-syncs the selected agent each refresh (HTML cache prevents repaint cost); (2) when stream_active flips to False, any leftover bubble flagged 'streaming' is finalized; (3) a 120 s no-events watchdog in _check_idle force-finalizes orphaned streams with a clear task_result."),
+    ],
     "4.8.4": [
         ("📌", "Status removed from default sort key", "Default sort is now (validation, tid). Including status in the key meant any working↔thinking↔idle flip rewrote the row order, changed the structure signature, forced a full repopulate, and flashed the highlight. Status grouping is still available via the explicit Group: Status toggle."),
         ("●", "Status dot color now updates live", "_update_in_place sets ForegroundRole explicitly, retouches the text, and forces a viewport repaint so the colored dot reflects the current status without waiting for a full table rebuild."),
@@ -6245,6 +6248,20 @@ class AIDEWindow(QMainWindow):
             # Tool calls between assistant chunks easily exceed 3s with no
             # text update — let the result event flip the status, not idle.
             if s.stream_active:
+                # Watchdog: a stream that has gone >120 s without any event
+                # is almost certainly orphaned (PTY broke, claude crashed,
+                # JSON line lost). Finalize so the UI doesn't show a stuck
+                # "streaming…" bubble forever.
+                if s._ai_active_time and (now - s._ai_active_time) > 120:
+                    s.stream_active = False
+                    s.stream_seq += 1
+                    s.claude_working = False
+                    s.claude_thinking = False
+                    s.waiting_input = True
+                    s.last_waiting_at = now
+                    s.task_result = ("[stream-watchdog] No stream events for "
+                                     ">120 s — finalized. Check terminal for actual state.")
+                    needs_refresh = True
                 continue
             if (s.claude_working or s.claude_thinking) and s._ai_active_time>0:
                 if now - s._ai_active_time >= TermSession._AI_IDLE_SECS:

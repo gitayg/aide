@@ -1034,6 +1034,19 @@ class AgentTable(QWidget):
                 self.run_task.emit(tid, next_task)
                 changed_tids.add(tid)
 
+            # If the agent is no longer streaming but the last bubble still says
+            # "streaming", finalize it. Defends against a missed result event.
+            if not stream_active:
+                conv = self._conversations.get(tid)
+                if conv:
+                    last = conv[-1]
+                    if last.get("role") == "agent" and last.get("streaming"):
+                        last["streaming"] = False
+                        if stream_text and not last.get("text"):
+                            last["text"] = stream_text
+                        last["ts"] = time.time()
+                        changed_tids.add(tid)
+
             if stream_seq != prev_seq:
                 self._agent_last_stream_seq[tid] = stream_seq
                 changed_tids.add(tid)
@@ -1096,7 +1109,11 @@ class AgentTable(QWidget):
                                      "ts": time.time()})
                     changed_tids.add(tid)
 
-            if tid == self._selected_tid and (changed_tids or stream_active):
+            # Always re-sync the chat panel for the selected agent — the HTML
+            # cache in _render skips repaint when nothing changed, so this is
+            # cheap. Without it, a stalled `result` event leaves the streaming
+            # bubble stuck because no later refresh ever updated the panel.
+            if tid == self._selected_tid:
                 task_result = s.get("task_result", "")
                 if task_result:
                     status = "task_error"
