@@ -415,6 +415,8 @@ class AgentTable(QWidget):
         self._task_queue: Dict[int, list] = {}     # tid → [task strings waiting to dispatch]
         self._stream_active: Dict[int, bool] = {}  # last-known stream_active per tid
         self._group_by: str = "none"               # "none" | "status" | "tags"
+        self._last_structure_sig = None            # diff key for skipping full repopulate
+        self._row_status: List[str] = []           # per-row status snapshot for cell-widget reuse
         self._build()
 
     # ── Build ──────────────────────────────────────────────────────────────────
@@ -681,12 +683,28 @@ class AgentTable(QWidget):
     def _repopulate(self):
         sessions = self._filtered()
         rows = self._grouped_rows(sessions)
-        # Preserve selection by tid across the destroy/rebuild cycle so the
-        # highlight doesn't appear to wander between rows on every refresh.
+
+        # Structural signature: tid sequence + group-header positions.
+        # When unchanged, do an in-place update — never call setRowCount or
+        # setItem (both would briefly clear the selection highlight, making
+        # it look like the focus is wandering between agents on every tick).
+        sig = tuple(
+            ("g", item[1]) if isinstance(item, tuple) else ("a", item.get("tid", -1))
+            for item in rows
+        )
+        if sig == self._last_structure_sig and self._tbl.rowCount() == len(rows):
+            self._update_in_place(rows)
+            return
+        self._last_structure_sig = sig
+
+        # Preserve selection by tid across the destroy/rebuild cycle.
         sel_tid = self._selected_tid
         self._tbl.blockSignals(True)
         self._tbl.setSortingEnabled(False)
         self._tbl.setRowCount(len(rows))
+        # Per-row status snapshot — used by the in-place updater to tell
+        # whether the action buttons need recreating.
+        self._row_status: List[str] = [""] * len(rows)
         for row, item in enumerate(rows):
             if isinstance(item, tuple) and item[0] == "group":
                 _, label, count = item
@@ -791,6 +809,7 @@ class AgentTable(QWidget):
                 item = self._tbl.item(row, col)
                 if item:
                     item.setBackground(QBrush(bg))
+            self._row_status[row] = status
         # Re-enable header click-sort only when there are no group rows to scramble.
         self._tbl.setSortingEnabled(self._group_by == "none")
         # Restore the previously-selected agent's row.
@@ -800,6 +819,115 @@ class AgentTable(QWidget):
                     self._tbl.selectRow(_r)
                     break
         self._tbl.blockSignals(False)
+
+    def _update_in_place(self, rows: list):
+        """Refresh changing cell values without destroying/recreating items.
+        Preserves selection focus across refresh ticks."""
+        for row, item in enumerate(rows):
+            if isinstance(item, tuple) and item[0] == "group":
+                hdr = self._tbl.item(row, _COL_DOT)
+                if hdr:
+                    hdr.setText(f"  ▸ {item[1]}  ({item[2]})")
+                continue
+            s = item
+            tid         = s.get("tid", -1)
+            task_result = s.get("task_result", "")
+            if task_result:
+                status = "task_error"
+            elif s.get("pending_validation"):
+                status = "validate"
+            else:
+                status = s.get("status", "idle")
+            color  = _STATUS_COLOR.get(status, _MUTED)
+            label  = _STATUS_LABEL.get(status, status.capitalize())
+
+            # Dot — color, sort key, tooltip
+            dot = self._tbl.item(row, _COL_DOT)
+            if dot:
+                dot.setForeground(QBrush(QColor(color)))
+                dot.setData(_SORT_ROLE, _STATUS_SORT.get(status, 99))
+                _dot_tip = label
+                if task_result:
+                    _dot_tip += f"\n\n{task_result}"
+                elif s.get("pending_validation"):
+                    _vn = s.get("validation_note", "")
+                    if _vn:
+                        _dot_tip += f"\n\n{_vn}"
+                dot.setToolTip(_dot_tip)
+
+            # Name — neural prefix + queue badge
+            neural = s.get("neural_on_bus", False)
+            qcount = len(self._task_queue.get(tid, []))
+            badge  = f"  ⏳{qcount}" if qcount else ""
+            neural_pfx = "🧠⇢ " if neural else ""
+            name_str = neural_pfx + s.get("name", f"Agent {tid}") + badge
+            name_item = self._tbl.item(row, _COL_NAME)
+            if name_item:
+                name_item.setText(name_str)
+                tooltip_parts = []
+                if neural:
+                    tooltip_parts.append("🧠 Connected to Neural Brain")
+                if qcount:
+                    tooltip_parts.append(f"{qcount} task(s) queued")
+                name_item.setToolTip(" · ".join(tooltip_parts) if tooltip_parts else "")
+
+            # Status (hidden, but kept in sync for sorting)
+            status_item = self._tbl.item(row, _COL_STATUS)
+            if status_item:
+                status_item.setText(label)
+                status_item.setData(_SORT_ROLE, _STATUS_SORT.get(status, 99))
+                status_item.setToolTip(task_result if task_result else "")
+
+            # Last active
+            ts = s.get("last_active", 0) or 0
+            la_item = self._tbl.item(row, _COL_ACTIVE)
+            if la_item:
+                la_item.setText(_fmt_age(ts))
+                la_item.setData(_SORT_ROLE, -ts)
+
+            # Tags / dir / cmd / model / tokens / account
+            tags_item = self._tbl.item(row, _COL_TAGS)
+            if tags_item: tags_item.setText(", ".join(s.get("tags", [])))
+            dir_item = self._tbl.item(row, _COL_DIR)
+            if dir_item: dir_item.setText(s.get("dir", ""))
+            cmd_item = self._tbl.item(row, _COL_CMD)
+            if cmd_item:
+                cmd_item.setText(s.get("cmd", ""))
+                sid = s.get("session_id", "")
+                cmd_item.setToolTip(f"Session: {sid}" if sid else "")
+            raw_model = s.get("model", "") or ""
+            model_short = raw_model.split("-")[1] if raw_model and "-" in raw_model else (raw_model or "default")
+            mod_item = self._tbl.item(row, _COL_MODEL)
+            if mod_item: mod_item.setText(model_short)
+            tokens = s.get("tokens_used", 0)
+            tok_str = f"{tokens:,}" if tokens else "—"
+            tok_item = self._tbl.item(row, _COL_TOKENS)
+            if tok_item:
+                tok_item.setText(tok_str)
+                tok_item.setData(_SORT_ROLE, tokens)
+            acct_item = self._tbl.item(row, _COL_ACCT)
+            if acct_item: acct_item.setText(s.get("profile", "") or "default")
+
+            # Action buttons — only recreate if status actually changed (would
+            # otherwise eat clicks and flash the highlight).
+            if row < len(self._row_status) and self._row_status[row] != status:
+                self._tbl.setCellWidget(row, _COL_ACTIONS,
+                                        self._make_action_btns(tid, status, s.get("name", f"Agent {tid}")))
+                self._row_status[row] = status
+
+            # Row background tint by status
+            if status in ("validate", "task_error"):
+                bg = QColor(_RED + "22")
+            elif status == "waiting":
+                bg = QColor(_ORANGE + "18")
+            elif status in ("working", "thinking"):
+                bg = QColor(_GREEN + "12")
+            else:
+                bg = QColor(_BG)
+            for col in range(_N_COLS):
+                cell = self._tbl.item(row, col)
+                if cell:
+                    cell.setBackground(QBrush(bg))
 
     def _tid_at_row(self, row: int) -> int:
         item = self._tbl.item(row, _COL_DOT)

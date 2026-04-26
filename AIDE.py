@@ -117,7 +117,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "4.8.2"
+VERSION      = "4.8.3"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -503,6 +503,9 @@ class NeuralRailOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "4.8.3": [
+        ("🪡", "In-place table updates — no more wandering highlight", "Dashboard refresh now diffs the agent set: when the structure (tids + group order) is unchanged, items update text/tooltip/colors in place instead of being destroyed and recreated. Selection focus stays exactly where you clicked it. Action-button widgets are only recreated when the agent's status actually changes."),
+    ],
     "4.8.2": [
         ("📌", "Stable row order in dashboard", "Tie-break in the table sort changed from `last_active` to `tid`. Streaming agents bumped `last_active` constantly which made rows shuffle every refresh — the highlight appeared to wander on its own."),
         ("●", "Status column folded into the dot tooltip", "The Status column is hidden; the colored dot's tooltip now shows the status label and any error / validation note. Reclaims horizontal space."),
