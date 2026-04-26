@@ -117,7 +117,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "4.0.0"
+VERSION      = "4.1.0"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -4557,6 +4557,72 @@ class PermissionDialog(QDialog):
         return w
 
 
+class _RestoreDialog(QDialog):
+    """List available session backups and let the user pick one to restore."""
+    restore_requested = pyqtSignal(str)   # path to the chosen backup file
+
+    def __init__(self, backups: list, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Restore Session from Backup")
+        self.setStyleSheet(_dlg_ss())
+        self.setFixedWidth(520)
+        self.setModal(True)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 16, 20, 16)
+        lay.setSpacing(10)
+
+        hdr = QLabel("Select a backup to restore:")
+        hdr.setStyleSheet(f"color:{C_ACCENT.name()};font-weight:bold;font-size:13px;")
+        lay.addWidget(hdr)
+
+        self._list = QListWidget()
+        self._list.setStyleSheet(
+            f"QListWidget{{background:{C_BG.name()};color:{C_FG.name()};"
+            f"border:1px solid {C_SURFACE.name()};border-radius:4px;"
+            f"font-family:{FONT_FAMILY};font-size:12px;}}"
+            f"QListWidget::item:selected{{background:{C_ACCENT.name()}33;color:{C_FG.name()};}}")
+        self._list.setMinimumHeight(200)
+        self._paths = []
+        for p in backups:
+            age = time.time() - p.stat().st_mtime
+            size_kb = p.stat().st_size // 1024
+            if age < 3600:
+                age_s = f"{int(age/60)}m ago"
+            elif age < 86400:
+                age_s = f"{int(age/3600)}h ago"
+            else:
+                age_s = f"{int(age/86400)}d ago"
+            self._list.addItem(f"{p.name}  ·  {size_kb} KB  ·  {age_s}")
+            self._paths.append(str(p))
+        self._list.setCurrentRow(0)
+        lay.addWidget(self._list)
+
+        btn_row = QHBoxLayout()
+        restore_btn = QPushButton("Restore selected")
+        restore_btn.setDefault(True)
+        restore_btn.setStyleSheet(
+            f"QPushButton{{background:{C_ACCENT.name()};color:#000;border:none;"
+            f"border-radius:4px;font-size:12px;font-weight:bold;padding:6px 18px;}}"
+            f"QPushButton:hover{{background:{C_ACCENT.name()}cc;}}")
+        restore_btn.clicked.connect(self._on_restore)
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setStyleSheet(
+            f"QPushButton{{background:{C_SURFACE.name()};color:{C_FG.name()};"
+            f"border:none;border-radius:4px;font-size:12px;padding:6px 18px;}}"
+            f"QPushButton:hover{{background:{C_SURFACE.name()}cc;}}")
+        cancel_btn.clicked.connect(self.close)
+        btn_row.addWidget(restore_btn)
+        btn_row.addStretch()
+        btn_row.addWidget(cancel_btn)
+        lay.addLayout(btn_row)
+
+    def _on_restore(self):
+        row = self._list.currentRow()
+        if 0 <= row < len(self._paths):
+            self.restore_requested.emit(self._paths[row])
+            self.close()
+
+
 class AIDEWindow(QMainWindow):
     _mcp_perm_signal = pyqtSignal(str, object)
 
@@ -4622,6 +4688,14 @@ class AIDEWindow(QMainWindow):
         from PyQt6.QtGui import QAction
         mb = self.menuBar()
         _app_m = mb.addMenu("_app")          # throwaway menu — roles move actions to system menu
+        _backup_act = QAction("Backup Session Now", self)
+        _backup_act.setMenuRole(QAction.MenuRole.ApplicationSpecificRole)
+        _backup_act.triggered.connect(self._action_backup_session)
+        _app_m.addAction(_backup_act)
+        _restore_act = QAction("Restore Session from Backup…", self)
+        _restore_act.setMenuRole(QAction.MenuRole.ApplicationSpecificRole)
+        _restore_act.triggered.connect(self._action_restore_session)
+        _app_m.addAction(_restore_act)
         _check_act = QAction("Check for Updates", self)
         _check_act.setMenuRole(QAction.MenuRole.ApplicationSpecificRole)
         _check_act.triggered.connect(self._manual_check_update)
@@ -5684,6 +5758,59 @@ class AIDEWindow(QMainWindow):
                     shutil.copy2(src, dst)
             except Exception:
                 pass
+
+    def _action_backup_session(self):
+        """Manual on-demand backup with a timestamp tag."""
+        import shutil
+        tag = time.strftime("manual-%Y-%m-%d-%H-%M")
+        self._sync_notes_from_panel()
+        self._save_session()
+        pairs = [
+            (SESSION_FILE,      CONFIG_DIR / f"session.backup-{tag}.json"),
+            (NEURAL_BRAIN_FILE, CONFIG_DIR / f"neural_brain.backup-{tag}.md"),
+        ]
+        backed = []
+        for src, dst in pairs:
+            try:
+                if src.exists():
+                    shutil.copy2(src, dst)
+                    backed.append(dst.name)
+            except Exception as e:
+                _log_err(f"backup failed: {e}")
+        if backed:
+            QMessageBox.information(
+                self, "Backup complete",
+                "Saved to ~/.aide/:\n" + "\n".join(backed))
+
+    def _action_restore_session(self):
+        """Show available session backups and restore the selected one."""
+        import shutil
+        backups = sorted(CONFIG_DIR.glob("session.backup-*.json"),
+                         key=lambda p: p.stat().st_mtime, reverse=True)
+        if not backups:
+            QMessageBox.information(self, "No backups", "No session backups found in ~/.aide/")
+            return
+        dlg = _RestoreDialog(backups, self)
+        dlg.restore_requested.connect(self._do_restore_session)
+        dlg.show()
+
+    def _do_restore_session(self, backup_path: str):
+        """Replace session.json with *backup_path* and restart the session."""
+        import shutil
+        reply = QMessageBox.question(
+            self, "Restore session",
+            f"Replace the current session with:\n{Path(backup_path).name}\n\n"
+            "AIDE will restart after restoring.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            shutil.copy2(backup_path, SESSION_FILE)
+        except Exception as e:
+            QMessageBox.critical(self, "Restore failed", str(e))
+            return
+        self._do_restart()
 
     def _check_for_update(self):
         if getattr(self, "_git_update_checked", False): return
