@@ -117,7 +117,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "4.10.2"
+VERSION      = "4.10.3"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -516,6 +516,9 @@ class NeuralRailOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "4.10.3": [
+        ("↕", "Click-sort restored on dashboard columns", "Re-enabled column header sorting (when not grouped). The in-place table updater now resolves each session to its current visual row via a tid → row map built fresh each tick, instead of assuming row N == sessions[N]. So Qt's click-sort can permute the rows however it likes and selection / status updates still land on the right agent."),
+    ],
     "4.10.2": [
         ("🔔", "Per-agent chat-panel sounds", "When an agent finishes a chat-panel task it plays a single ping; when it transitions to waiting it plays two pings. Pitch is keyed by tab id (~80 Hz steps over 8 tabs) so you can tell which agent is asking without looking. Wired through the existing _EVENT_Q so it composes with the configurable notification system."),
         ("🛡️", "Richer MCP request bubbles", "MCP permission popup messages in the chat panel now include: a one-line headline with the most relevant arg (command/file_path/path/url/pattern), the full tool input JSON (up to 4000 chars instead of 400), and a footer with the agent's working dir and session id."),

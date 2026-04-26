@@ -588,13 +588,10 @@ class AgentTable(QWidget):
         self._tbl.setColumnWidth(_COL_TOKENS,  80)
         self._tbl.setColumnWidth(_COL_ACCT,    80)
         self._tbl.setColumnWidth(_COL_ACTIONS, 170)
-        # Click-sort permanently disabled. Our _filtered() order is stable
-        # (validation-pinned + tid), and Group toggle handles status grouping.
-        # Letting Qt re-sort visually after a header click broke the in-place
-        # updater — `rows[N]` no longer matched the table's visual row N, so
-        # clicks selected the wrong agent.
-        h.setSortIndicatorShown(False)
-        h.setSectionsClickable(False)
+        # Click-sort enabled (when no grouping). The in-place updater uses
+        # a tid→visual-row map, so Qt's sort doesn't break selection.
+        h.setSortIndicatorShown(True)
+        h.setSectionsClickable(True)
         self._tbl.verticalHeader().setVisible(False)
         self._tbl.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._tbl.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -922,10 +919,10 @@ class AgentTable(QWidget):
                     item.setBackground(QBrush(bg))
             # Track button SHAPE — what the in-place updater compares against.
             self._row_status[row] = "answer" if status == "waiting" else "review"
-        # Sorting permanently OFF — the row order in `rows` is what we want
-        # displayed, and Qt's internal sort would reshuffle rows on every
-        # status change (sort roles change), breaking the in-place updater.
-        self._tbl.setSortingEnabled(False)
+        # Re-enable sorting only when there are no group headers (which would
+        # be scrambled by a sort). The in-place updater handles sorted rows
+        # via the tid→visual-row map.
+        self._tbl.setSortingEnabled(self._group_by == "none")
         # Restore the previously-selected agent's row.
         if sel_tid >= 0:
             for _r in range(self._tbl.rowCount()):
@@ -936,15 +933,41 @@ class AgentTable(QWidget):
 
     def _update_in_place(self, rows: list):
         """Refresh changing cell values without destroying/recreating items.
-        Preserves selection focus across refresh ticks."""
-        for row, item in enumerate(rows):
+        Preserves selection focus across refresh ticks AND survives Qt's
+        click-to-sort by looking up each row by tid."""
+        # Build tid → visual row index. Click-sort may have permuted rows
+        # since the last full repopulate.
+        tid_to_row: Dict[int, int] = {}
+        group_label_to_row: Dict[str, int] = {}
+        for r in range(self._tbl.rowCount()):
+            it = self._tbl.item(r, _COL_DOT)
+            if not it:
+                continue
+            t = it.data(Qt.ItemDataRole.UserRole)
+            if t is not None and t >= 0:
+                tid_to_row[t] = r
+            else:
+                # Group header (tid=-1) — index by label text minus markers
+                txt = it.text().strip().lstrip("▸ ").rstrip()
+                # Strip the trailing "  (count)" so we match the bare label
+                if "(" in txt:
+                    txt = txt.rsplit("(", 1)[0].strip()
+                group_label_to_row[txt] = r
+
+        for item in rows:
             if isinstance(item, tuple) and item[0] == "group":
+                row = group_label_to_row.get(item[1])
+                if row is None:
+                    continue
                 hdr = self._tbl.item(row, _COL_DOT)
                 if hdr:
                     hdr.setText(f"  ▸ {item[1]}  ({item[2]})")
                 continue
             s = item
             tid         = s.get("tid", -1)
+            row         = tid_to_row.get(tid)
+            if row is None:
+                continue
             task_result = s.get("task_result", "")
             if task_result:
                 status = "task_error"
