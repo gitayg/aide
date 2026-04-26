@@ -87,8 +87,10 @@ _COL_ACTIVE = 3
 _COL_TAGS   = 4
 _COL_DIR    = 5
 _COL_CMD    = 6
-_COL_ACCT   = 7
-_N_COLS     = 8
+_COL_MODEL  = 7
+_COL_TOKENS = 8
+_COL_ACCT   = 9
+_N_COLS     = 10
 
 
 def _fmt_age(ts: float) -> str:
@@ -246,7 +248,8 @@ class AgentTable(QWidget):
         # table
         self._tbl = QTableWidget(0, _N_COLS)
         self._tbl.setHorizontalHeaderLabels(
-            ["●", "Name", "Status", "Last Active", "Tags", "Dir", "Command", "Account"])
+            ["●", "Name", "Status", "Last Active", "Tags", "Dir", "Command",
+             "Model", "Tokens", "Account"])
         h = self._tbl.horizontalHeader()
         h.setSectionResizeMode(_COL_DOT,    QHeaderView.ResizeMode.Fixed)
         h.setSectionResizeMode(_COL_NAME,   QHeaderView.ResizeMode.Interactive)
@@ -255,14 +258,18 @@ class AgentTable(QWidget):
         h.setSectionResizeMode(_COL_TAGS,   QHeaderView.ResizeMode.Interactive)
         h.setSectionResizeMode(_COL_DIR,    QHeaderView.ResizeMode.Stretch)
         h.setSectionResizeMode(_COL_CMD,    QHeaderView.ResizeMode.Interactive)
+        h.setSectionResizeMode(_COL_MODEL,  QHeaderView.ResizeMode.Fixed)
+        h.setSectionResizeMode(_COL_TOKENS, QHeaderView.ResizeMode.Fixed)
         h.setSectionResizeMode(_COL_ACCT,   QHeaderView.ResizeMode.Fixed)
         self._tbl.setColumnWidth(_COL_DOT,    28)
-        self._tbl.setColumnWidth(_COL_NAME,   160)
-        self._tbl.setColumnWidth(_COL_STATUS, 120)
+        self._tbl.setColumnWidth(_COL_NAME,   150)
+        self._tbl.setColumnWidth(_COL_STATUS, 110)
         self._tbl.setColumnWidth(_COL_ACTIVE, 90)
-        self._tbl.setColumnWidth(_COL_TAGS,   120)
-        self._tbl.setColumnWidth(_COL_CMD,    180)
-        self._tbl.setColumnWidth(_COL_ACCT,   90)
+        self._tbl.setColumnWidth(_COL_TAGS,   110)
+        self._tbl.setColumnWidth(_COL_CMD,    160)
+        self._tbl.setColumnWidth(_COL_MODEL,  90)
+        self._tbl.setColumnWidth(_COL_TOKENS, 80)
+        self._tbl.setColumnWidth(_COL_ACCT,   80)
         self._tbl.verticalHeader().setVisible(False)
         self._tbl.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._tbl.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -386,6 +393,10 @@ class AgentTable(QWidget):
             dot.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             dot.setForeground(QBrush(QColor(color)))
             dot.setData(Qt.ItemDataRole.UserRole, tid)
+            raw_model = s.get("model", "") or ""
+            model_short = raw_model.split("-")[1] if raw_model and "-" in raw_model else (raw_model or "default")
+            tokens = s.get("tokens_used", 0)
+            tok_str = f"{tokens:,}" if tokens else "—"
             self._tbl.setItem(row, _COL_DOT,    dot)
             self._tbl.setItem(row, _COL_NAME,   _item(s.get("name", f"Agent {tid}")))
             self._tbl.setItem(row, _COL_STATUS, _item(label))
@@ -393,6 +404,8 @@ class AgentTable(QWidget):
             self._tbl.setItem(row, _COL_TAGS,   _item(", ".join(s.get("tags", []))))
             self._tbl.setItem(row, _COL_DIR,    _item(s.get("dir", "")))
             self._tbl.setItem(row, _COL_CMD,    _item(s.get("cmd", "")))
+            self._tbl.setItem(row, _COL_MODEL,  _item(model_short))
+            self._tbl.setItem(row, _COL_TOKENS, _item(tok_str))
             self._tbl.setItem(row, _COL_ACCT,   _item(s.get("profile", "") or "default"))
 
             if status == "validate":

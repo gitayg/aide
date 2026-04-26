@@ -117,7 +117,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "4.1.0"
+VERSION      = "4.2.0"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -1371,7 +1371,9 @@ class TermSession:
         self.autostart_dir:str=""; self.autostart_cmd:str=""
         self.github_token_name:str=""   # name of the token in vault to inject as GITHUB_TOKEN/GH_TOKEN
         self.claude_profile:str=""      # name used for CLAUDE_CONFIG_DIR; empty = shared ~/.claude/
+        self.claude_model:str=""        # --model flag; empty = claude default
         self.claude_args:str=""         # extra CLI args appended when launching `claude`
+        self.tokens_used:int=0          # cumulative token count parsed from claude output
         self.browser_url:str=""; self.watching=False
         self.info=TermInfo()
         self.screen=_ScrollScreen(cols,rows)
@@ -1450,6 +1452,15 @@ class TermSession:
         # This prevents malicious terminal output from injecting shell metacharacters.
         if m:=re.search(r"claude --resume ([a-zA-Z0-9_-]+)",text):
             self.claude_resume_cmd=f"claude --resume {m.group(1)}"
+        # Accumulate token counts from Claude Code's session-end summary line.
+        # Matches both "Tokens: 1,234 input · 567 output" and the ≈ variant.
+        if m:=re.search(r"(\d[\d,]+)\s+input\s+[·•]\s*(\d[\d,]+)\s+output",text):
+            try:
+                inp=int(m.group(1).replace(",",""))
+                out=int(m.group(2).replace(",",""))
+                self.tokens_used+=inp+out
+            except ValueError:
+                pass
         # Spinner detection — braille char alone is sufficient; _THINKING_RE is checked first
         # so the thinking/working distinction is preserved when text follows on the same line.
         _had_spinner = False
@@ -1621,7 +1632,8 @@ class TermSession:
         d = dict(custom_title=self.custom_title,notes=self.notes,tasks=self.tasks,tags=self.tags,
                  autostart_dir=self.autostart_dir,autostart_cmd=self.autostart_cmd,
                  github_token_name=self.github_token_name,
-                 claude_profile=self.claude_profile, claude_args=self.claude_args,
+                 claude_profile=self.claude_profile, claude_model=self.claude_model,
+                 claude_args=self.claude_args, tokens_used=self.tokens_used,
                  browser_url=self.browser_url,watching=self.watching,
                  cwd=self.info.cwd_full or self.info.cwd,
                  ssh_host=self.info.ssh_host,last_cmd=self.info.last_cmd)
@@ -1635,7 +1647,8 @@ class TermSession:
         s.tasks=d.get("tasks",""); s.tags=d.get("tags",[]); s.variables={}  # populated from vault on unlock
         s.autostart_dir=d.get("autostart_dir",""); s.autostart_cmd=d.get("autostart_cmd","")
         s.github_token_name=d.get("github_token_name","")
-        s.claude_profile=d.get("claude_profile",""); s.claude_args=d.get("claude_args","")
+        s.claude_profile=d.get("claude_profile",""); s.claude_model=d.get("claude_model","")
+        s.claude_args=d.get("claude_args",""); s.tokens_used=d.get("tokens_used",0)
         s.browser_url=d.get("browser_url",""); s.watching=d.get("watching",False)
         stored_cwd=d.get("cwd","")
         s.info.cwd_full=stored_cwd
@@ -3340,10 +3353,30 @@ class NotesPanel(QWidget):
         self._claude_profile.setPlaceholderText("e.g. work, personal  (blank = default)")
         self._claude_profile.setStyleSheet(_auto_edit_css)
         al.addWidget(self._claude_profile)
+        model_lbl = QLabel("Model"); model_lbl.setStyleSheet(_auto_lbl_css)
+        al.addWidget(model_lbl)
+        _combo_ss = (f"QComboBox{{background:{C_BG.name()};color:{C_FG.name()};"
+                     f"border:1px solid {C_SURFACE.name()};border-radius:3px;"
+                     f"font-family:{FONT_FAMILY};font-size:11px;padding:2px 6px;}}"
+                     f"QComboBox:focus{{border-color:{C_ACCENT.name()};}}"
+                     f"QComboBox::drop-down{{border:none;width:14px;}}"
+                     f"QComboBox QAbstractItemView{{background:{C_SURFACE.name()};"
+                     f"color:{C_FG.name()};border:1px solid {C_SURFACE.name()};"
+                     f"selection-background-color:{C_ACCENT.name()}44;}}")
+        self._claude_model = QComboBox()
+        self._claude_model.setStyleSheet(_combo_ss)
+        for m_label, m_id in [
+            ("(default)", ""),
+            ("Opus 4.7  — most capable", "claude-opus-4-7"),
+            ("Sonnet 4.6  — balanced", "claude-sonnet-4-6"),
+            ("Haiku 4.5  — fastest", "claude-haiku-4-5-20251001"),
+        ]:
+            self._claude_model.addItem(m_label, m_id)
+        al.addWidget(self._claude_model)
         args_lbl = QLabel("Extra `claude` args"); args_lbl.setStyleSheet(_auto_lbl_css)
         al.addWidget(args_lbl)
         self._claude_args = QLineEdit()
-        self._claude_args.setPlaceholderText("e.g. --model sonnet  (optional)")
+        self._claude_args.setPlaceholderText("e.g. --no-auto-compact  (optional)")
         self._claude_args.setStyleSheet(_auto_edit_css)
         al.addWidget(self._claude_args)
         login_btn = QPushButton("🔐  claude /login")
@@ -3435,7 +3468,7 @@ class NotesPanel(QWidget):
 
     def load(self,notes:str,tasks:str="",variables:Optional[Dict[str,str]]=None,
              autostart_dir:str="",autostart_cmd:str="",github_token_name:str="",
-             claude_profile:str="",claude_args:str=""):
+             claude_profile:str="",claude_model:str="",claude_args:str=""):
         self._notes_edit.setPlainText(notes)
         self._numbering=True
         self._tasks_edit.setPlainText(tasks)
@@ -3452,6 +3485,8 @@ class NotesPanel(QWidget):
         self._gh_token_combo.setCurrentIndex(max(0, idx))
         self._gh_token_combo.blockSignals(False)
         self._claude_profile.setText(claude_profile or "")
+        idx = max(0, self._claude_model.findData(claude_model or ""))
+        self._claude_model.setCurrentIndex(idx)
         self._claude_args.setText(claude_args or "")
 
     def set_github_token_names(self, names: list, current: str):
@@ -3474,6 +3509,7 @@ class NotesPanel(QWidget):
     def get_autostart_dir(self)->str: return self._auto_dir.text().strip()
     def get_autostart_cmd(self)->str: return self._auto_cmd.text().strip()
     def get_claude_profile(self)->str: return self._claude_profile.text().strip()
+    def get_claude_model(self)->str:   return self._claude_model.currentData() or ""
     def get_claude_args(self)->str:    return self._claude_args.text().strip()
     def get_variables(self)->Optional[Dict[str,str]]:
         """Return current variables, or None if the vault is locked.
@@ -4871,6 +4907,7 @@ class AIDEWindow(QMainWindow):
         s.autostart_dir = self._notes_panel.get_autostart_dir()
         s.autostart_cmd = self._notes_panel.get_autostart_cmd()
         s.claude_profile = self._notes_panel.get_claude_profile()
+        s.claude_model   = self._notes_panel.get_claude_model()
         s.claude_args    = self._notes_panel.get_claude_args()
         if self._vault.is_unlocked():
             s.github_token_name = self._notes_panel.get_github_token_name()
@@ -4886,7 +4923,7 @@ class AIDEWindow(QMainWindow):
         self._notes_panel.set_github_token_names(token_names, s.github_token_name)
         self._notes_panel.load(s.notes, s.tasks, s.variables,
                                s.autostart_dir, s.autostart_cmd, s.github_token_name,
-                               s.claude_profile, s.claude_args)
+                               s.claude_profile, s.claude_model, s.claude_args)
 
     def _set_focused_pane(self, idx: int):
         """Change which pane is focused, syncing notes panel as needed."""
@@ -5015,6 +5052,11 @@ class AIDEWindow(QMainWindow):
             d = self._claude_profile_dir(prof)
             Path(d).mkdir(parents=True, exist_ok=True)
             env["CLAUDE_CONFIG_DIR"] = d
+        # Per-tab model selection (the claude wrapper and task dispatcher also add --model;
+        # ANTHROPIC_MODEL is a fallback for any bare `claude` invocation in the shell)
+        model = getattr(session, "claude_model", "")
+        if model:
+            env["ANTHROPIC_MODEL"] = model
         env.update(session.variables)   # vault vars take precedence
         return env
 
@@ -5028,6 +5070,12 @@ class AIDEWindow(QMainWindow):
         self._run_autostart(tid)
         return tid
 
+    @staticmethod
+    def _model_flag(s: "TermSession") -> str:
+        """Return a --model flag string for session *s*, or empty string."""
+        m = (s.claude_model or "").strip()
+        return f" --model {m}" if m else ""
+
     def _run_autostart(self, tid: int, delay_ms: int = 800):
         """Execute the autostart command + cd for session *tid* after *delay_ms* ms."""
         s = self.sessions.get(tid)
@@ -5035,6 +5083,10 @@ class AIDEWindow(QMainWindow):
         cmd = (s.autostart_cmd or "").strip()
         d   = (s.autostart_dir or "").strip()
         if not cmd and not d: return
+        # Inject --model into bare `claude` invocations if a model is selected
+        model_flag = self._model_flag(s)
+        if model_flag and re.match(r"claude(\s|$)", cmd) and "--model" not in cmd:
+            cmd = "claude" + model_flag + cmd[6:]
         payload = b""
         gh_exports = self._gh_token_exports(s)
         if gh_exports:
@@ -5061,6 +5113,8 @@ class AIDEWindow(QMainWindow):
             "dir":                s.autostart_dir or s.info.cwd_full or s.info.cwd or "",
             "cmd":                s.claude_resume_cmd or s.autostart_cmd or "",
             "profile":            s.claude_profile or "",
+            "model":              s.claude_model or "",
+            "tokens_used":        s.tokens_used,
             "pending_validation": s.pending_validation,
             "validation_note":    s.validation_note,
         }
@@ -5109,7 +5163,9 @@ class AIDEWindow(QMainWindow):
         s = self.sessions.get(tid)
         if not s or not s.alive: return
         d    = (s.autostart_dir or "").strip()
-        args = f" {s.claude_args}" if s.claude_args else ""
+        args = self._model_flag(s)
+        if s.claude_args:
+            args += f" {s.claude_args}"
         payload = b""
         gh_exports = self._gh_token_exports(s)
         if gh_exports:
@@ -5119,7 +5175,7 @@ class AIDEWindow(QMainWindow):
         safe_task = task.replace("'", "'\\''")
         # prefer explicit --resume <id> if known; fall back to --continue
         resume_base = s.claude_resume_cmd or "claude --continue"
-        payload += f"{resume_base} -p '{safe_task}'{args}\n".encode("utf-8")
+        payload += f"{resume_base}{args} -p '{safe_task}'\n".encode("utf-8")
         def _write(t=tid, p=payload):
             sess = self.sessions.get(t)
             if sess: sess.write(p)
