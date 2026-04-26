@@ -4,6 +4,7 @@ No imports from AIDE.py — receives data as plain dicts to avoid circular impor
 """
 from __future__ import annotations
 
+import html as _html
 import time
 from typing import Dict, List, Optional
 
@@ -11,6 +12,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QLineEdit,
     QDialog, QPlainTextEdit, QDialogButtonBox, QApplication,
+    QSplitter, QTextBrowser, QScrollBar,
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QBrush
@@ -159,38 +161,162 @@ class _ValidationDialog(QDialog):
         self.close()
 
 
-class _ChatBar(QWidget):
-    message_sent = pyqtSignal(str)
-    closed       = pyqtSignal()
+class AgentChatPanel(QWidget):
+    """Right-side conversation panel — shows task history and agent responses."""
+    task_sent = pyqtSignal(int, str)   # tid, task text
 
-    def __init__(self, agent_name: str, parent=None):
+    _STATUS_DOT = {
+        "working":    f"<span style='color:{_GREEN}'>⬤</span>",
+        "thinking":   f"<span style='color:{_ACCENT}'>⬤</span>",
+        "waiting":    f"<span style='color:{_ORANGE}'>⬤</span>",
+        "idle":       f"<span style='color:{_MUTED}'>⬤</span>",
+        "validate":   f"<span style='color:{_RED}'>⬤</span>",
+        "task_error": f"<span style='color:{_RED}'>⬤</span>",
+    }
+
+    def __init__(self, parent=None):
         super().__init__(parent)
-        self.setStyleSheet(f"background:{_PANEL};border-top:1px solid {_SURFACE};")
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(12, 8, 12, 8)
-        lay.setSpacing(8)
-        lbl = QLabel(f"→ {agent_name}:")
-        lbl.setStyleSheet(
-            f"color:{_ACCENT};font-size:12px;font-weight:bold;min-width:120px;")
-        lay.addWidget(lbl)
+        self._tid  = -1
+        self._name = ""
+        self.setMinimumWidth(260)
+        self.setStyleSheet(
+            f"QWidget{{background:{_PANEL};}}"
+            f"QLabel{{background:transparent;}}")
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+
+        # ── header ────────────────────────────────────────────────────────────
+        hdr = QWidget()
+        hdr.setFixedHeight(44)
+        hdr.setStyleSheet(
+            f"background:{_PANEL};border-bottom:1px solid {_SURFACE};")
+        hl = QHBoxLayout(hdr)
+        hl.setContentsMargins(12, 0, 12, 0)
+        hl.setSpacing(8)
+        self._title_lbl = QLabel("Select an agent")
+        self._title_lbl.setStyleSheet(
+            f"color:{_FG};font-size:13px;font-weight:bold;")
+        self._status_lbl = QLabel("")
+        self._status_lbl.setStyleSheet(f"color:{_MUTED};font-size:11px;")
+        hl.addWidget(self._title_lbl, 1)
+        hl.addWidget(self._status_lbl)
+        lay.addWidget(hdr)
+
+        # ── conversation log ──────────────────────────────────────────────────
+        self._log = QTextBrowser()
+        self._log.setReadOnly(True)
+        self._log.setOpenLinks(False)
+        self._log.setStyleSheet(
+            f"QTextBrowser{{background:{_BG};border:none;padding:8px;}}"
+            f"QScrollBar:vertical{{background:{_BG};width:6px;border:none;}}"
+            f"QScrollBar::handle:vertical{{background:{_SURFACE};"
+            f"border-radius:3px;min-height:20px;}}")
+        lay.addWidget(self._log, 1)
+
+        # ── active indicator (shown while agent is working) ───────────────────
+        self._active_lbl = QLabel("")
+        self._active_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._active_lbl.setFixedHeight(22)
+        self._active_lbl.setStyleSheet(
+            f"color:{_MUTED};font-size:10px;font-style:italic;"
+            f"background:{_PANEL};border-top:1px solid {_SURFACE};")
+        self._active_lbl.setVisible(False)
+        lay.addWidget(self._active_lbl)
+
+        # ── input bar ─────────────────────────────────────────────────────────
+        inp_bar = QWidget()
+        inp_bar.setFixedHeight(52)
+        inp_bar.setStyleSheet(
+            f"background:{_PANEL};border-top:1px solid {_SURFACE};")
+        il = QHBoxLayout(inp_bar)
+        il.setContentsMargins(10, 8, 10, 8)
+        il.setSpacing(6)
         self._inp = QLineEdit()
-        self._inp.setPlaceholderText("Type a task and press Enter — claude runs once and exits…")
+        self._inp.setPlaceholderText("Send a task…")
         self._inp.setStyleSheet(_SEARCH_SS)
         self._inp.returnPressed.connect(self._send)
-        lay.addWidget(self._inp, 1)
-        close_btn = QPushButton("✕")
-        close_btn.setFixedSize(24, 24)
-        close_btn.setStyleSheet(
-            f"QPushButton{{background:transparent;color:{_MUTED};border:none;"
-            f"font-size:14px;}}QPushButton:hover{{color:{_RED};}}")
-        close_btn.clicked.connect(self.closed)
-        lay.addWidget(close_btn)
+        self._inp.setEnabled(False)
+        il.addWidget(self._inp, 1)
+        self._send_btn = QPushButton("Send")
+        self._send_btn.setFixedWidth(54)
+        self._send_btn.setEnabled(False)
+        self._send_btn.setStyleSheet(_BTN_SS)
+        self._send_btn.clicked.connect(self._send)
+        il.addWidget(self._send_btn)
+        lay.addWidget(inp_bar)
+
+    # ── public ────────────────────────────────────────────────────────────────
+
+    def set_agent(self, tid: int, name: str, status: str, messages: list):
+        self._tid  = tid
+        self._name = name
+        self._title_lbl.setText(name)
+        dot = self._STATUS_DOT.get(status, f"<span style='color:{_MUTED}'>⬤</span>")
+        label = _STATUS_LABEL.get(status, status.capitalize())
+        self._status_lbl.setText(f"<html>{dot} {label}</html>")
+
+        is_busy = status in ("working", "thinking")
+        self._active_lbl.setVisible(is_busy)
+        if is_busy:
+            self._active_lbl.setText(
+                "Working…" if status == "working" else "Thinking…")
+
+        self._inp.setEnabled(not is_busy)
+        self._send_btn.setEnabled(not is_busy)
+        self._render(messages)
+
+    def focus_input(self):
         self._inp.setFocus()
 
+    # ── private ───────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _fmt_time(ts: float) -> str:
+        if not ts:
+            return ""
+        return time.strftime("%H:%M:%S", time.localtime(ts))
+
+    def _render(self, messages: list):
+        ff = "Menlo,Consolas,monospace"
+        ts_ss = f"color:{_MUTED};font-size:9px;font-family:{ff};margin-top:1px;"
+        parts = [f'<div style="font-family:{ff};font-size:12px;padding:4px 6px;">']
+        for m in messages:
+            role = m.get("role", "")
+            text = _html.escape(m.get("text", "")).replace("\n", "<br>")
+            tstr = self._fmt_time(m.get("ts", 0))
+            if role == "user":
+                parts.append(
+                    f'<div style="text-align:right;margin:5px 0;">'
+                    f'<span style="background:{_ACCENT}33;color:{_FG};'
+                    f'padding:5px 10px;border-radius:8px;'
+                    f'display:inline-block;max-width:88%;">{text}</span>'
+                    f'<div style="text-align:right;{ts_ss}">{tstr}</div></div>')
+            elif role == "agent":
+                cursor = (f' <span style="color:{_ACCENT};">▍</span>'
+                          if m.get("streaming") else "")
+                label = "streaming…" if m.get("streaming") else tstr
+                parts.append(
+                    f'<div style="text-align:left;margin:5px 0;">'
+                    f'<span style="background:{_SURFACE};color:{_FG};'
+                    f'padding:5px 10px;border-radius:8px;'
+                    f'display:inline-block;max-width:88%;">{text}{cursor}</span>'
+                    f'<div style="text-align:left;{ts_ss}">{label}</div></div>')
+            elif role == "status":
+                parts.append(
+                    f'<div style="text-align:center;margin:3px 0;'
+                    f'color:{_MUTED};font-size:10px;">{text}'
+                    f' <span style="color:{_MUTED};">· {tstr}</span></div>')
+        parts.append('</div>')
+        self._log.setHtml("".join(parts))
+        sb = self._log.verticalScrollBar()
+        sb.setValue(sb.maximum())
+
     def _send(self):
-        txt = self._inp.text().strip()
-        if txt:
-            self.message_sent.emit(txt)
+        text = self._inp.text().strip()
+        if text and self._tid >= 0:
+            self.task_sent.emit(self._tid, text)
             self._inp.clear()
 
 
@@ -199,10 +325,12 @@ class AgentTable(QWidget):
 
     Signals:
         open_terminal(tid)             — open terminal view for this agent
+        open_detail(tid)               — open notes/settings dialog
         new_agent()                    — add a new agent terminal
         launch_agent(tid)              — re-launch autostart for this agent
         send_message(tid, msg)         — send a chat message to agent terminal
         set_validation(tid, note, on)  — mark/unmark pending validation
+        run_task(tid, msg)             — dispatch one-shot task to agent
     """
 
     open_terminal  = pyqtSignal(int)
@@ -211,15 +339,17 @@ class AgentTable(QWidget):
     launch_agent   = pyqtSignal(int)
     send_message   = pyqtSignal(int, str)
     set_validation = pyqtSignal(int, str, bool)
-    run_task       = pyqtSignal(int, str)   # tid, task text — one-shot agent run
+    run_task       = pyqtSignal(int, str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._sessions: List[dict] = []
         self._tag_filter: set = set()
         self._search: str = ""
-        self._chat_tid: int = -1
-        self._chat_bar: Optional[_ChatBar] = None
+        self._selected_tid: int = -1
+        self._conversations: Dict[int, list] = {}
+        self._agent_last_waiting_at: Dict[int, float] = {}
+        self._agent_last_stream_seq: Dict[int, int] = {}
         self._build()
 
     # ── Build ──────────────────────────────────────────────────────────────────
@@ -228,6 +358,17 @@ class AgentTable(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
+
+        # Main splitter: table on left, chat panel on right
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setHandleWidth(1)
+        splitter.setStyleSheet(f"QSplitter::handle{{background:{_SURFACE};}}")
+
+        # ── left: toolbar + table ─────────────────────────────────────────────
+        left = QWidget()
+        left_lay = QVBoxLayout(left)
+        left_lay.setContentsMargins(0, 0, 0, 0)
+        left_lay.setSpacing(0)
 
         # toolbar
         bar = QWidget()
@@ -263,7 +404,7 @@ class AgentTable(QWidget):
         add_btn.clicked.connect(self.new_agent)
         bl.addWidget(add_btn)
 
-        root.addWidget(bar)
+        left_lay.addWidget(bar)
 
         # table
         self._tbl = QTableWidget(0, _N_COLS)
@@ -303,15 +444,19 @@ class AgentTable(QWidget):
         self._tbl.verticalHeader().setDefaultSectionSize(38)
         self._tbl.doubleClicked.connect(self._on_double_click)
         self._tbl.selectionModel().selectionChanged.connect(self._on_selection_changed)
-        root.addWidget(self._tbl, 1)
+        left_lay.addWidget(self._tbl, 1)
 
-        # chat bar (hidden by default)
-        self._chat_container = QWidget()
-        self._chat_container.setFixedHeight(54)
-        self._chat_container.setVisible(False)
-        self._chat_lay = QVBoxLayout(self._chat_container)
-        self._chat_lay.setContentsMargins(0, 0, 0, 0)
-        root.addWidget(self._chat_container)
+        # ── right: chat panel ─────────────────────────────────────────────────
+        self._chat_panel = AgentChatPanel()
+        self._chat_panel.task_sent.connect(self._on_panel_task)
+
+        splitter.addWidget(left)
+        splitter.addWidget(self._chat_panel)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 0)
+        splitter.setSizes([9999, 300])
+
+        root.addWidget(splitter)
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
@@ -319,6 +464,7 @@ class AgentTable(QWidget):
         self._sessions = sessions
         self._rebuild_tags()
         self._repopulate()
+        self._update_conversations(sessions)
 
     # ── Tag management ─────────────────────────────────────────────────────────
 
@@ -360,7 +506,6 @@ class AgentTable(QWidget):
     def _toggle_tag(self, tag: str, btn: QPushButton):
         shift = bool(QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier)
         if not shift:
-            # Single-select: clear all others, then toggle this one
             already_only = self._tag_filter == {tag}
             self._tag_filter.clear()
             self._sync_tag_buttons()
@@ -491,20 +636,29 @@ class AgentTable(QWidget):
             return
         tid = self._tid_at_row(index.row())
         if tid >= 0:
-            self.open_detail.emit(tid)
+            self.open_terminal.emit(tid)
 
     def _on_selection_changed(self):
-        if not self._chat_bar or not self._chat_container.isVisible():
-            return
         rows = self._tbl.selectionModel().selectedRows()
         if not rows:
             return
         tid = self._tid_at_row(rows[0].row())
-        if tid < 0 or tid == self._chat_tid:
+        if tid < 0:
             return
+        self._selected_tid = tid
         s = next((x for x in self._sessions if x.get("tid") == tid), None)
-        if s:
-            self._open_chat(tid, s.get("name", f"Agent {tid}"))
+        if not s:
+            return
+        task_result = s.get("task_result", "")
+        if task_result:
+            status = "task_error"
+        elif s.get("pending_validation"):
+            status = "validate"
+        else:
+            status = s.get("status", "idle")
+        self._chat_panel.set_agent(
+            tid, s.get("name", f"Agent {tid}"), status,
+            self._conversations.get(tid, []))
 
     def _make_action_btns(self, tid: int, status: str, name: str) -> QWidget:
         w = QWidget()
@@ -520,8 +674,8 @@ class AgentTable(QWidget):
         if status == "waiting":
             ans_btn = QPushButton("Answer")
             ans_btn.setStyleSheet(_ss)
-            ans_btn.setToolTip("Open chat to answer this agent")
-            ans_btn.clicked.connect(lambda: self._open_chat(tid, name))
+            ans_btn.setToolTip("Focus chat panel to answer this agent")
+            ans_btn.clicked.connect(lambda: self._focus_panel_for(tid))
             lay.addWidget(ans_btn)
         else:
             rev_btn = QPushButton("Review")
@@ -539,22 +693,96 @@ class AgentTable(QWidget):
         lay.addStretch()
         return w
 
-    def _open_chat(self, tid: int, name: str):
-        if self._chat_bar:
-            self._chat_lay.removeWidget(self._chat_bar)
-            self._chat_bar.deleteLater()
-            self._chat_bar = None
-        if self._chat_tid == tid:
-            self._chat_tid = -1
-            self._chat_container.setVisible(False)
-            return
-        self._chat_tid = tid
-        bar = _ChatBar(name, self._chat_container)
-        self._chat_lay.addWidget(bar)
-        bar.message_sent.connect(lambda msg, t=tid: self.run_task.emit(t, msg))
-        bar.closed.connect(lambda: self._open_chat(tid, name))
-        self._chat_bar = bar
-        self._chat_container.setVisible(True)
+    def _focus_panel_for(self, tid: int):
+        for row in range(self._tbl.rowCount()):
+            if self._tid_at_row(row) == tid:
+                self._tbl.selectRow(row)
+                break
+        self._chat_panel.focus_input()
+
+    # ── Conversation tracking ──────────────────────────────────────────────────
+
+    def _update_conversations(self, sessions: list):
+        changed_tids = set()
+        for s in sessions:
+            tid = s.get("tid", -1)
+            if tid < 0:
+                continue
+
+            stream_seq    = s.get("stream_seq", 0)
+            stream_active = s.get("stream_active", False)
+            stream_text   = s.get("stream_text", "")
+            prev_seq      = self._agent_last_stream_seq.get(tid, 0)
+
+            if stream_seq != prev_seq:
+                self._agent_last_stream_seq[tid] = stream_seq
+                changed_tids.add(tid)
+                conv = self._conversations.setdefault(tid, [])
+                last = conv[-1] if conv else None
+                now = time.time()
+                if stream_active:
+                    if last and last.get("role") == "agent" and last.get("streaming"):
+                        last["text"] = stream_text
+                    else:
+                        conv.append({"role": "agent", "text": stream_text,
+                                     "streaming": True, "ts": now})
+                else:
+                    if last and last.get("role") == "agent" and last.get("streaming"):
+                        last["text"] = stream_text or last.get("text", "")
+                        last["streaming"] = False
+                        last["ts"] = now
+                    elif stream_text:
+                        conv.append({"role": "agent", "text": stream_text,
+                                     "streaming": False, "ts": now})
+
+            # Fallback: legacy box-scraping path for non-stream-json runs
+            last_waiting_at   = s.get("last_waiting_at", 0.0)
+            last_agent_output = s.get("last_agent_output", "")
+            prev_waiting      = self._agent_last_waiting_at.get(tid, 0.0)
+            if last_waiting_at > prev_waiting and last_waiting_at > 0:
+                self._agent_last_waiting_at[tid] = last_waiting_at
+                conv = self._conversations.setdefault(tid, [])
+                last = conv[-1] if conv else None
+                already_captured = (
+                    last and last.get("role") == "agent"
+                    and last.get("text", "") == last_agent_output)
+                if not already_captured:
+                    if last_agent_output:
+                        conv.append({"role": "agent", "text": last_agent_output,
+                                     "streaming": False, "ts": time.time()})
+                    else:
+                        conv.append({"role": "status", "text": "Waiting for your response",
+                                     "ts": time.time()})
+                    changed_tids.add(tid)
+
+            if tid == self._selected_tid and (changed_tids or stream_active):
+                task_result = s.get("task_result", "")
+                if task_result:
+                    status = "task_error"
+                elif s.get("pending_validation"):
+                    status = "validate"
+                else:
+                    status = s.get("status", "idle")
+                self._chat_panel.set_agent(
+                    tid, s.get("name", f"Agent {tid}"), status,
+                    self._conversations.get(tid, []))
+
+    def _add_message(self, tid: int, role: str, text: str):
+        if tid not in self._conversations:
+            self._conversations[tid] = []
+        self._conversations[tid].append(
+            {"role": role, "text": text, "ts": time.time()})
+
+    def _on_panel_task(self, tid: int, text: str):
+        self._add_message(tid, "user", text)
+        self.run_task.emit(tid, text)
+        s = next((x for x in self._sessions if x.get("tid") == tid), None)
+        if s and self._selected_tid == tid:
+            self._chat_panel.set_agent(
+                tid, s.get("name", f"Agent {tid}"), "working",
+                self._conversations.get(tid, []))
+
+    # ── Dialogs ────────────────────────────────────────────────────────────────
 
     def _ask_validation(self, tid: int, name: str, existing: str):
         dlg = _ValidationDialog(name, existing, self)

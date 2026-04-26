@@ -117,7 +117,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "4.5.0"
+VERSION      = "4.6.0"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -477,6 +477,10 @@ class NeuralRailOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "4.6.0": [
+        ("💬", "Agent conversation panel", "Clicking an agent in the dashboard opens a right-side panel showing the full conversation — tasks you sent appear on the right, agent responses on the left. Ask questions or send tasks directly from the panel without leaving the dashboard."),
+        ("🌊", "Streaming JSON responses", "Tasks now dispatch with `claude -p --output-format stream-json --verbose`. The chat panel renders the response progressively as text events arrive instead of waiting for the box to close. Token counts come straight from the result event — no more box-scraping or ANSI heuristics."),
+    ],
     "4.5.0": [
         ("📋", "Agent detail dialog on double-click", "Double-clicking an agent in the dashboard opens a notes/tasks editor dialog — edit without leaving the dashboard. 'Open Terminal' switches to the terminal view."),
         ("⚡", "Action buttons in dashboard table", "Each row now has inline Review / Answer / Commit buttons replacing the right-click context menu."),
@@ -1417,6 +1421,12 @@ class TermSession:
         self.task_result:str=""          # last task dispatch result / error shown in dashboard
         self.github_project:str=""       # e.g. "owner/repo" for this agent
         self.auto_git_pull:bool=False    # prepend git pull before each task dispatch
+        self.last_agent_output:str=""    # clean text of last agent response (shown in chat panel)
+        self._response_buf:str=""        # accumulates response box content while inside ╭─…╰─
+        self.stream_active:bool=False    # True while a stream-json -p task is running
+        self.stream_text:str=""          # accumulated assistant text from current stream
+        self.stream_seq:int=0            # bumped on every stream event (so dashboard polls detect changes)
+        self._json_line_buf:str=""       # buffer for partial JSON lines split across PTY chunks
         self.claude_resume_cmd:str=""; self.claude_working:bool=False; self.claude_thinking:bool=False
         self._ai_active_time:float=0.0   # last time working/thinking was detected
         self._in_response_box:bool=False  # True between ╭─ and ╰─
@@ -1508,9 +1518,19 @@ class TermSession:
         # ╭─ box opening: transition thinking→working; also marks entry into a response box
         if self._START_RE.search(text):
             self._in_response_box=True
+            self._response_buf=""
             self._ai_active_time=time.time()
             if not _had_spinner and self.claude_thinking:
                 self.claude_thinking=False; self.claude_working=True
+        # Accumulate clean text while inside the response box for the chat panel
+        if self._in_response_box:
+            _lc = _ANSI_RE.sub('', text)
+            for _ln in _lc.splitlines():
+                _ln = _ln.strip().lstrip('│').strip()
+                if _ln and _ln[0] not in '╭╰─━':
+                    self._response_buf += _ln + "\n"
+                    if len(self._response_buf) > 8000:
+                        self._response_buf = self._response_buf[-4000:]
         # ╰─ box closing: Claude finished its response.
         # _was_active covers all signals: spinner, thinking→working transition, or ╭─ box-open.
         # The 300 ms debounce only fires notification if waiting_input is still True at that
@@ -1521,8 +1541,25 @@ class TermSession:
             self.claude_working=False; self.claude_thinking=False
             if _was_active or _had_spinner:
                 self.waiting_input=True
+                self.last_agent_output = self._response_buf.strip()
+                self._response_buf=""
                 self.last_ping_time=time.time(); self.last_waiting_at=self.last_ping_time
                 threading.Timer(0.3, self._fire_wait_events).start()
+        # ── stream-json event parsing (for tasks dispatched via _run_agent_task) ──
+        # Each event from `claude --output-format stream-json` arrives as a JSON line.
+        # PTY chunks may split lines, so we buffer incomplete lines.
+        if self.stream_active or '"type"' in text:
+            self._json_line_buf += _ANSI_RE.sub('', text)
+            while '\n' in self._json_line_buf:
+                _line, _, self._json_line_buf = self._json_line_buf.partition('\n')
+                _line = _line.strip()
+                if not (_line.startswith('{') and _line.endswith('}')):
+                    continue
+                try:
+                    _ev = json.loads(_line)
+                except Exception:
+                    continue
+                self._handle_stream_event(_ev)
         if self._sf: self.stream.feed(text)
         else:        self.stream.feed(data)
         self.dirty=True; self.last_out_time=time.time(); self._notif_armed=True
@@ -1539,6 +1576,44 @@ class TermSession:
                     _EVENT_Q.put(("blink",self.tab_id,msg))
                     _EVENT_Q.put(("notif",self.tab_id,msg,self._output_tail))
                 break
+
+    def _handle_stream_event(self, ev: dict) -> None:
+        """Process one event from `claude --output-format stream-json`."""
+        et = ev.get("type", "")
+        if et == "system" and ev.get("subtype") == "init":
+            self.stream_active = True
+            self.stream_text = ""
+            self.stream_seq += 1
+            self.claude_working = True
+            self.claude_thinking = False
+            self.waiting_input = False
+            self._ai_active_time = time.time()
+        elif et == "assistant":
+            msg = ev.get("message", {}) or {}
+            for c in msg.get("content", []) or []:
+                if c.get("type") == "text":
+                    self.stream_text += c.get("text", "")
+                    self.stream_seq += 1
+                    self.claude_working = True
+                    self._ai_active_time = time.time()
+        elif et == "result":
+            final_text = self.stream_text or ev.get("result", "") or ""
+            self.stream_text = final_text
+            self.last_agent_output = final_text
+            usage = ev.get("usage", {}) or {}
+            inp = usage.get("input_tokens", 0) or 0
+            out = usage.get("output_tokens", 0) or 0
+            if inp or out:
+                self.tokens_used += inp + out
+            if ev.get("is_error"):
+                self.task_result = (ev.get("result") or "Task failed")[:500]
+            self.stream_active = False
+            self.stream_seq += 1
+            self.claude_working = False
+            self.claude_thinking = False
+            self.waiting_input = True
+            self.last_ping_time = time.time()
+            self.last_waiting_at = self.last_ping_time
 
     def _fire_wait_events(self):
         """Called 300 ms after ╰─ is detected. Only fires if still waiting (not cleared by a new spinner)."""
@@ -4873,7 +4948,7 @@ class AIDEWindow(QMainWindow):
         self._hotkey_bar.set_btn_active("toggle_uber", self.config.uber_mode)
         self._hotkey_bar.set_btn_active("toggle_dashboard", True)
         for interval,fn in [(100,self._process_events),(1000,self._check_idle),
-                             (500,self._refresh_cards),(1000,self._refresh_dashboard),
+                             (500,self._refresh_cards),(250,self._refresh_dashboard),
                              (30000,self._save_session),(5000,self._check_for_update)]:
             t=QTimer(self); t.timeout.connect(fn); t.start(interval)
         self._load_session()
@@ -5308,6 +5383,11 @@ class AIDEWindow(QMainWindow):
             "cmd":                s.claude_resume_cmd or s.autostart_cmd or "",
             "session_id":         session_id,
             "task_result":        s.task_result or "",
+            "last_agent_output":  s.last_agent_output or "",
+            "last_waiting_at":    s.last_waiting_at,
+            "stream_active":      s.stream_active,
+            "stream_text":        s.stream_text or "",
+            "stream_seq":         s.stream_seq,
             "github_project":     s.github_project or "",
             "neural_on_bus":      s.neural_on_bus,
             "profile":            s.claude_profile or "",
@@ -5405,7 +5485,14 @@ class AIDEWindow(QMainWindow):
             payload += b"git pull --ff-only 2>/dev/null || true\n"
         safe_task = task.replace("'", "'\\''")
         resume_base = s.claude_resume_cmd or "claude --continue"
-        payload += f"{resume_base}{args} -p '{safe_task}'\n".encode("utf-8")
+        payload += (f"{resume_base}{args} --output-format stream-json --verbose "
+                    f"-p '{safe_task}'\n").encode("utf-8")
+        s.stream_active = True
+        s.stream_text = ""
+        s.stream_seq += 1
+        s.claude_working = True
+        s.claude_thinking = False
+        s.waiting_input = False
         def _write(t=tid, p=payload):
             sess = self.sessions.get(t)
             if sess: sess.write(p)
