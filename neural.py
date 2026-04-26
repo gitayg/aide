@@ -145,32 +145,40 @@ class NeuralBus:
                         bus._mcp_sessions.pop(sid, None)
 
             # ── MCP JSON-RPC POST ──────────────────────────────────────────
+            def _mcp_push(self, sid: str, msg: dict):
+                """Send a JSON-RPC response to the client via the SSE channel.
+                Per MCP SSE transport spec, responses go via the SSE stream
+                that the client opened on /mcp/sse — NOT in the POST body."""
+                with bus._mcp_lock:
+                    q = bus._mcp_sessions.get(sid)
+                if q is not None:
+                    q.put(msg)
+
             def _mcp_post(self, sid: str):
                 d    = self._body()
                 meth = d.get("method", "")
                 rid  = d.get("id")
 
+                # MCP SSE protocol: POST returns 202 ACK, response is pushed
+                # via the SSE channel.
                 if meth == "initialize":
-                    self.send_response(200)
-                    self.send_header("Content-Type", "application/json")
-                    self.send_header("Mcp-Session-Id", sid)
-                    result = json.dumps({
+                    self.send_response(202); self.end_headers()
+                    self._mcp_push(sid, {
                         "jsonrpc": "2.0", "id": rid,
                         "result": {
                             "protocolVersion": "2024-11-05",
                             "capabilities": {"tools": {}},
                             "serverInfo": {"name": "aide-neural", "version": "3.0.0"},
                         }
-                    }).encode()
-                    self.send_header("Content-Length", str(len(result)))
-                    self.end_headers(); self.wfile.write(result)
+                    })
                     return
 
                 if meth == "notifications/initialized":
                     self.send_response(202); self.end_headers(); return
 
                 if meth == "tools/list":
-                    self._ok({
+                    self.send_response(202); self.end_headers()
+                    self._mcp_push(sid, {
                         "jsonrpc": "2.0", "id": rid,
                         "result": {"tools": [{
                             "name": "permission_prompt",
@@ -184,35 +192,55 @@ class NeuralBus:
                                 "required": ["tool_name", "tool_input"],
                             }
                         }]}
-                    }); return
+                    })
+                    return
 
                 if meth == "tools/call" and d.get("params", {}).get("name") == "permission_prompt":
-                    inp     = d.get("params", {}).get("arguments", {})
-                    perm_id = uuid.uuid4().hex[:8]
-                    ev      = threading.Event()
-                    with bus._mcp_lock:
-                        bus._perm_events[perm_id] = ev
-                    # Ask the Qt main thread (non-blocking from our side)
-                    if bus._on_permission:
-                        bus._on_permission(perm_id, inp)
-                    approved = ev.wait(timeout=300)
-                    with bus._mcp_lock:
-                        res = bus._perm_results.pop(perm_id, None)
-                        bus._perm_events.pop(perm_id, None)
-                    if not approved or res is None:
+                    # ACK the POST immediately so claude doesn't block the
+                    # HTTP request. The human's decision is pushed via SSE
+                    # once they answer the dialog.
+                    self.send_response(202); self.end_headers()
+                    inp = d.get("params", {}).get("arguments", {})
+                    def _resolve():
+                        perm_id = uuid.uuid4().hex[:8]
+                        ev = threading.Event()
+                        with bus._mcp_lock:
+                            bus._perm_events[perm_id] = ev
+                        if bus._on_permission:
+                            bus._on_permission(perm_id, inp)
+                        approved = ev.wait(timeout=300)
+                        with bus._mcp_lock:
+                            res = bus._perm_results.pop(perm_id, None)
+                            bus._perm_events.pop(perm_id, None)
                         decision = "deny"
-                    else:
-                        decision = res.get("decision", "deny")
-                    behavior = "allow" if decision == "allow" else "deny"
-                    self._ok({
-                        "jsonrpc": "2.0", "id": rid,
-                        "result": {
-                            "content": [{"type": "text", "text": behavior}],
-                            "behavior": behavior,
-                        }
-                    }); return
+                        if approved and res is not None:
+                            decision = res.get("decision", "deny")
+                        behavior = "allow" if decision == "allow" else "deny"
+                        # Per MCP permission_prompt spec: response is a JSON
+                        # string in `content[0].text` with {behavior, updatedInput}.
+                        payload = {"behavior": behavior}
+                        if behavior == "allow":
+                            payload["updatedInput"] = inp.get("tool_input", {})
+                        else:
+                            payload["message"] = "User denied the tool request."
+                        self._mcp_push(sid, {
+                            "jsonrpc": "2.0", "id": rid,
+                            "result": {
+                                "content": [
+                                    {"type": "text", "text": json.dumps(payload)}
+                                ],
+                            },
+                        })
+                    threading.Thread(target=_resolve, daemon=True).start()
+                    return
 
-                self._err(404, f"unknown method: {meth}")
+                # Any other method — return error via SSE if rid is set
+                self.send_response(202); self.end_headers()
+                if rid is not None:
+                    self._mcp_push(sid, {
+                        "jsonrpc": "2.0", "id": rid,
+                        "error": {"code": -32601, "message": f"Method not found: {meth}"},
+                    })
 
             def do_POST(self):
                 try:

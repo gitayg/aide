@@ -117,7 +117,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "4.9.1"
+VERSION      = "4.9.2"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -503,6 +503,10 @@ class NeuralRailOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "4.9.2": [
+        ("🛡️", "MCP transport fixed — `claude mcp list` now succeeds", "Two issues: (1) the `claude` CLI lookup didn't search ~/.local/bin so AIDE.app launches couldn't register the server; (2) our SSE handler was returning JSON-RPC responses in the HTTP POST body, but the MCP SSE transport spec requires responses to come back via the SSE event stream — claude opened the stream, posted `initialize`, got 200 in the body, kept waiting on SSE, and timed out. Both fixed: _find_claude_bin() probes ~/.local/bin, /opt/homebrew/bin, /usr/local/bin, and the user's login shell; _mcp_post now returns 202 + pushes the result via the SSE queue."),
+        ("🪵", "MCP registration logged", "~/.aide/app.log gets `[mcp] using claude binary: …` and `[mcp] registered aide MCP at …` lines so failures are debuggable."),
+    ],
     "4.9.1": [
         ("🩹", "Startup crash fix", "Added missing QTextEdit to agent_dashboard.py imports — _ChatInput(QTextEdit) raised NameError at import time and crashed AIDE on launch. py_compile didn't catch it (only checks syntax, not name resolution)."),
     ],
@@ -6271,6 +6275,36 @@ class AIDEWindow(QMainWindow):
 
         self._neural_bus.resolve_permission(perm_id, approved)
 
+    def _find_claude_bin(self) -> Optional[str]:
+        """Locate the `claude` CLI. macOS .app launches have a stripped PATH
+        that excludes ~/.local/bin and /opt/homebrew/bin where claude usually
+        lives, so subprocess.run(['claude', ...]) fails with FileNotFoundError."""
+        import shutil
+        # 1. Try PATH first (works in dev shells)
+        p = shutil.which("claude")
+        if p:
+            return p
+        # 2. Common install locations
+        for cand in [
+            Path.home() / ".local" / "bin" / "claude",
+            Path("/opt/homebrew/bin/claude"),
+            Path("/usr/local/bin/claude"),
+            Path.home() / ".npm-global" / "bin" / "claude",
+        ]:
+            if cand.exists():
+                return str(cand)
+        # 3. Ask the user's login shell where it is
+        try:
+            sh = os.environ.get("SHELL", "/bin/bash")
+            r = subprocess.run([sh, "-l", "-c", "command -v claude"],
+                               capture_output=True, text=True, timeout=3)
+            out = r.stdout.strip()
+            if out and Path(out).exists():
+                return out
+        except Exception:
+            pass
+        return None
+
     def _write_mcp_config(self):
         """Register the AIDE MCP server with Claude Code.
 
@@ -6280,21 +6314,40 @@ class AIDEWindow(QMainWindow):
         official `claude mcp add` CLI instead, which writes to ~/.claude.json
         in the format the runtime actually reads."""
         url = f"http://127.0.0.1:{self._neural_port}/mcp/sse"
+        log_path = CONFIG_DIR / "app.log"
+        def _log(msg):
+            try: log_path.open("a").write(f"[mcp] {msg}\n")
+            except Exception: pass
+
+        claude_bin = self._find_claude_bin()
+        if not claude_bin:
+            _log("could NOT find `claude` binary in PATH or known locations — "
+                 "MCP server NOT registered. Permission prompts from -p tasks "
+                 "will fail with 'mcp__aide__permission_prompt not found'.")
+            self._mcp_registered = False
+            return
+        _log(f"using claude binary: {claude_bin}")
+
         # Idempotent re-register (port may change between AIDE launches).
         try:
-            subprocess.run(["claude", "mcp", "remove", "aide", "--scope", "user"],
+            subprocess.run([claude_bin, "mcp", "remove", "aide", "--scope", "user"],
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                            timeout=5)
-        except Exception:
-            pass
+        except Exception as e:
+            _log(f"remove failed (likely not registered): {e}")
         try:
-            subprocess.run(
-                ["claude", "mcp", "add", "--transport", "sse",
+            r = subprocess.run(
+                [claude_bin, "mcp", "add", "--transport", "sse",
                  "--scope", "user", "aide", url],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                timeout=5)
-            self._mcp_registered = True
-        except Exception:
+                capture_output=True, text=True, timeout=5)
+            if r.returncode == 0:
+                _log(f"registered aide MCP at {url}")
+                self._mcp_registered = True
+            else:
+                _log(f"add returned {r.returncode}: stdout={r.stdout!r} stderr={r.stderr!r}")
+                self._mcp_registered = False
+        except Exception as e:
+            _log(f"add raised: {e}")
             self._mcp_registered = False
         # Keep the legacy settings.json entry too — harmless and useful for
         # older Claude Code versions that may still read it.
