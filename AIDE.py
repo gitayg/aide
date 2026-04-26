@@ -106,6 +106,7 @@ try:
 except ImportError:
     _HAS_WEBENGINE = False
 
+from agent_dashboard import AgentTable
 from dashboard import DashboardServer, local_ip
 from neural import NeuralBus, write_client
 
@@ -116,7 +117,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "3.0.3"
+VERSION      = "4.0.0"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -476,6 +477,15 @@ class NeuralRailOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "4.0.0": [
+        ("⊞", "Agent dashboard — new primary view", "Replaces the terminal as the main view. All agents shown in a dense sortable table grouped by status (Pending Answer, Working, Idle). Search by name, filter by tag, double-click to open terminal."),
+        ("⚡", "Agents auto-launch on tab creation", "AIDE now automatically executes each tab's autostart command when the tab is created or AIDE restarts — no more manual start. The NewTerminalDialog is removed."),
+        ("🛡️", "claude wrapper auto-injects --permission-prompt-tool", "A claude wrapper in _neural_bin/ silently adds --permission-prompt-tool $AIDE_PERMISSION_TOOL to every claude invocation so MCP permissions work without manual flags."),
+        ("123", "Permission dialog keyboard shortcuts", "1 = Allow  ·  2 = Always allow  ·  3 = Deny — faster approvals without reaching for the mouse."),
+        ("🟡", "Pending validation state per agent", "Right-click any agent → Set Pending Validation to attach a note and mark the card red. Use it to flag output that needs human review."),
+        ("💬", "Chat bar per agent", "Right-click → Chat opens an inline input bar that injects messages directly into that agent's terminal PTY."),
+        ("↪", "Redirect output to another agent", "Right-click → Redirect output to… forwards a message to any other agent via the Neural Bus."),
+    ],
     "3.0.0": [
         ("🛡️", "MCP permission-prompt server", "AIDE now serves an MCP SSE endpoint on the Neural Bus. Claude Code sessions launched with --permission-prompt-tool mcp__aide__permission_prompt route every tool-permission request to a native AIDE dialog — you see the tool name and arguments and click Allow or Deny. AIDE auto-writes the MCP server entry to ~/.claude/settings.json on startup."),
         ("↩", "Double-click terminal sends Enter", "Double-clicking anywhere in a terminal area sends an Enter keystroke — useful for quickly confirming Claude Code prompts without reaching for the keyboard."),
@@ -1371,6 +1381,7 @@ class TermSession:
         self.last_out_time=0.0; self._notif_armed=False
         self._input_buf=bytearray(); self._output_tail=""
         self.waiting_input=False; self.scroll_offset=0; self.last_ping_time:float=0.0; self.last_waiting_at:float=0.0
+        self.pending_validation:bool=False; self.validation_note:str=""
         self.claude_resume_cmd:str=""; self.claude_working:bool=False; self.claude_thinking:bool=False
         self._ai_active_time:float=0.0   # last time working/thinking was detected
         self._in_response_box:bool=False  # True between ╭─ and ╰─
@@ -3024,16 +3035,11 @@ class HotkeyBar(QWidget):
         ("◀","Prev","prev_tab","Ctrl+Shift+Tab"),
         ("▶","Next","next_tab","Ctrl+Tab"),
         ("⊟","Split","split_term","^B-|"),
-        ("🌐","Browse","split_browse","^B-b"),
-        ("👁","Watch","toggle_watch","^B-x"),
+        ("⊞","Dashboard","toggle_dashboard","^B-d"),
         ("📝","SideBar","toggle_notes","^B-p"),
-        ("📋","Copy","copy_screen","^B-y"),
-        ("📌","Paste","clipboard_menu","^B-v"),
-        ("🧹","Clear","clear_line","clear input"),
         ("🔑","API Keys","open_settings","^B-k"),
         ("🐙","GitHub","github_tokens","^B-g"),
         ("🔔","Notifs","configure_notifs","^B-s"),
-        ("🃏","Cards","configure_cards","^B-c"),
         ("🚀","Uber","toggle_uber","^B-u"),
     ]
 
@@ -4445,7 +4451,24 @@ class PermissionDialog(QDialog):
         btn_all.clicked.connect(lambda: self._decide("always_all"))
         always_row.addWidget(btn_all)
         always_row.addStretch()
+
+        hint = QLabel("  1 = Allow · 2 = Always allow · 3 = Deny")
+        hint.setStyleSheet(f"color:{C_MUTED.name()};font-size:10px;background:transparent;")
+        always_row.addWidget(hint)
         lay.addLayout(always_row)
+
+        self._has_terminal = bool(terminal_name)
+
+    def keyPressEvent(self, event):
+        key = event.key()
+        if key == Qt.Key.Key_1:
+            self._decide("allow")
+        elif key == Qt.Key.Key_2:
+            self._decide("always_session" if self._has_terminal else "always_all")
+        elif key == Qt.Key.Key_3:
+            self._decide("deny")
+        else:
+            super().keyPressEvent(event)
 
     def _decide(self, decision: str):
         self._decision = decision
@@ -4561,9 +4584,10 @@ class AIDEWindow(QMainWindow):
         self._start_dashboard()
         self._hotkey_bar.set_btn_active("toggle_notes", self._notes_vis)
         self._hotkey_bar.set_btn_active("toggle_uber", self.config.uber_mode)
+        self._hotkey_bar.set_btn_active("toggle_dashboard", True)
         for interval,fn in [(100,self._process_events),(1000,self._check_idle),
-                             (500,self._refresh_cards),(30000,self._save_session),
-                             (5000,self._check_for_update)]:
+                             (500,self._refresh_cards),(1000,self._refresh_dashboard),
+                             (30000,self._save_session),(5000,self._check_for_update)]:
             t=QTimer(self); t.timeout.connect(fn); t.start(interval)
         self._load_session()
         # Initial restore is done — any further tab switches must not flash
@@ -4617,7 +4641,7 @@ class AIDEWindow(QMainWindow):
         self._tab_bar=TabBar()
         self._tab_bar.tab_selected.connect(self._on_tab_clicked)
         self._tab_bar.shift_tab_selected.connect(self._on_shift_tab_clicked)
-        self._tab_bar.new_tab_clicked.connect(lambda: self._new_tab(show_prompt=True))
+        self._tab_bar.new_tab_clicked.connect(lambda: self._new_tab())
         self._tab_bar.rename_requested.connect(self._rename_tab_by_id)
         self._tab_bar.close_requested.connect(self._close_tab_with_confirm)
         self._tab_bar.tabs_reordered.connect(self._on_tabs_reordered)
@@ -4719,10 +4743,22 @@ class AIDEWindow(QMainWindow):
         self._notes_panel.vault_lock_requested.connect(self._on_vault_lock_requested)
         self._notes_panel.github_token_changed.connect(self._on_gh_token_selected)
         self._notes_panel.claude_login_requested.connect(self._on_claude_login)
+        # ── Center stack: page 0 = agent dashboard, page 1 = terminal area ───────
+        self._center_stack = QStackedWidget()
+        self._agent_table = AgentTable()
+        self._agent_table.open_terminal.connect(self._dashboard_open_terminal)
+        self._agent_table.new_agent.connect(lambda: self._new_tab())
+        self._agent_table.launch_agent.connect(self._run_autostart)
+        self._agent_table.send_message.connect(self._dashboard_send_message)
+        self._agent_table.set_validation.connect(self._dashboard_set_validation)
+        self._center_stack.addWidget(self._agent_table)  # page 0
+        self._center_stack.addWidget(term_area)           # page 1
+        self._center_stack.setCurrentIndex(0)
+
         self._main_splitter=QSplitter(Qt.Orientation.Horizontal)
         self._main_splitter.setHandleWidth(3)
         self._main_splitter.setStyleSheet(f"QSplitter::handle{{background:{C_SURFACE.name()};}}")
-        self._main_splitter.addWidget(term_area)
+        self._main_splitter.addWidget(self._center_stack)
         self._main_splitter.addWidget(self._notes_panel)
         self._main_splitter.setStretchFactor(0,1); self._main_splitter.setStretchFactor(1,0)
         self._sidebar_splitter.addWidget(self._main_splitter)
@@ -4897,23 +4933,86 @@ class AIDEWindow(QMainWindow):
         env.update(session.variables)   # vault vars take precedence
         return env
 
-    def _new_tab(self, title: str = "", show_prompt: bool = False) -> int:
+    def _new_tab(self, title: str = "") -> int:
         tid=self._next_id; self._next_id+=1; s=TermSession(tid)
         if title: s.custom_title=title
         if self._vault.is_unlocked():
             s.variables = self._vault.get_vars(tid)
         self.sessions[tid]=s; s.start(self.config.shell or DEFAULT_SHELL, self._env_with_vars(s))
         self._tab_bar.add_card(s,self.config.card); self._switch_to(tid)
-        if show_prompt:
-            QTimer.singleShot(150, lambda: self._show_new_terminal_prompt(tid))
+        self._run_autostart(tid)
         return tid
 
-    def _show_new_terminal_prompt(self, tid: int):
+    def _run_autostart(self, tid: int, delay_ms: int = 800):
+        """Execute the autostart command + cd for session *tid* after *delay_ms* ms."""
         s = self.sessions.get(tid)
         if not s: return
-        url = f"http://127.0.0.1:{self._neural_port}"
-        dlg = NewTerminalDialog(s, url, str(NEURAL_BRAIN_FILE), self)
-        dlg.exec()
+        cmd = (s.autostart_cmd or "").strip()
+        d   = (s.autostart_dir or "").strip()
+        if not cmd and not d: return
+        payload = b""
+        gh_exports = self._gh_token_exports(s)
+        if gh_exports:
+            payload += f"stty -echo; {gh_exports} stty echo\n".encode("utf-8")
+        if d:   payload += f"cd {shlex.quote(d)}\n".encode("utf-8")
+        if cmd: payload += f"{cmd}\n".encode("utf-8")
+        if not payload: return
+        QTimer.singleShot(delay_ms, lambda t=tid, p=payload: (
+            self.sessions[t].write(p) if t in self.sessions else None))
+
+    # ── Agent dashboard integration ────────────────────────────────────────────
+
+    def _session_data(self, s: "TermSession") -> dict:
+        status = "idle"
+        if s.claude_working:   status = "working"
+        elif s.claude_thinking: status = "thinking"
+        elif s.waiting_input:  status = "waiting"
+        return {
+            "tid":                s.tab_id,
+            "name":               s.effective_title(),
+            "status":             status,
+            "last_active":        s.last_out_time,
+            "tags":               list(s.tags),
+            "dir":                s.autostart_dir or s.info.cwd or "",
+            "cmd":                s.autostart_cmd or "",
+            "profile":            s.claude_profile or "",
+            "pending_validation": s.pending_validation,
+            "validation_note":    s.validation_note,
+        }
+
+    def _refresh_dashboard(self):
+        data = [self._session_data(s) for s in self.sessions.values()]
+        self._agent_table.refresh(data)
+
+    def _show_dashboard(self):
+        self._center_stack.setCurrentIndex(0)
+        self._hotkey_bar.set_btn_active("toggle_dashboard", True)
+
+    def _show_terminal_view(self):
+        self._center_stack.setCurrentIndex(1)
+        self._hotkey_bar.set_btn_active("toggle_dashboard", False)
+
+    def _action_toggle_dashboard(self):
+        if self._center_stack.currentIndex() == 0:
+            self._show_terminal_view()
+        else:
+            self._show_dashboard()
+
+    def _dashboard_open_terminal(self, tid: int):
+        if tid >= 0 and tid in self.sessions:
+            self._switch_to(tid)
+        self._show_terminal_view()
+
+    def _dashboard_send_message(self, tid: int, msg: str):
+        s = self.sessions.get(tid)
+        if s and s.alive:
+            s.write(msg.encode("utf-8"))
+
+    def _dashboard_set_validation(self, tid: int, note: str, enabled: bool):
+        s = self.sessions.get(tid)
+        if not s: return
+        s.pending_validation = enabled
+        s.validation_note    = note
 
     def _close_tab(self,tid:int):
         if len(self.sessions)<=1: return
@@ -5393,7 +5492,7 @@ class AIDEWindow(QMainWindow):
             QMessageBox.StandardButton.No)
         if reply==QMessageBox.StandardButton.Yes: self._close_tab(tid)
 
-    def _action_new_tab(self): self._new_tab(f"Terminal {len(self.sessions)+1}", show_prompt=True)
+    def _action_new_tab(self): self._new_tab(f"Terminal {len(self.sessions)+1}")
     def _action_close_tab(self): self._close_tab_with_confirm(self.active_id)
 
     def _action_clear_line(self):
@@ -6007,23 +6106,9 @@ class AIDEWindow(QMainWindow):
         active=data.get("active",-1)
         target=active if active in self.sessions else (next(iter(self.sessions)) if self.sessions else -1)
         if target>=0: self._switch_to(target)
-        for tid,sess in self.sessions.items():
+        for tid in list(self.sessions.keys()):
             try:
-                cmd=(sess.autostart_cmd or "").strip()
-                d  =(sess.autostart_dir or "").strip()
-                if not cmd and not d: continue
-                payload=b""
-                # Silent GitHub-token export runs BEFORE the autostart command
-                # so claude (or whatever autostart is) sees $GITHUB_TOKEN set.
-                gh_exports = self._gh_token_exports(sess)
-                if gh_exports:
-                    payload += f"stty -echo; {gh_exports} stty echo\n".encode("utf-8")
-                if d:   payload += f"cd {shlex.quote(d)}\n".encode("utf-8")
-                if cmd: payload += f"{cmd}\n".encode("utf-8")
-                if not payload: continue
-                _tid=tid; _payload=payload
-                QTimer.singleShot(800, lambda t=_tid, p=_payload: (
-                    self.sessions[t].write(p) if t in self.sessions else None))
+                self._run_autostart(tid)
             except Exception as e:
                 _log_err(f"tab {tid} autostart failed: {e}")
 

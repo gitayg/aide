@@ -465,11 +465,34 @@ if __name__ == "__main__":
 '''
 
 
+_CLAUDE_WRAPPER_SRC = '''\
+#!/bin/bash
+# AIDE claude wrapper — auto-injects --permission-prompt-tool when AIDE_PERMISSION_TOOL is set.
+_dir="$(cd "$(dirname "$0")" && pwd)"
+_stripped="${PATH//$_dir:/}"
+_stripped="${_stripped//:$_dir/}"
+_real="$(PATH="$_stripped" which claude 2>/dev/null)"
+if [ -z "$_real" ]; then
+  echo "error: claude not found in PATH (outside AIDE wrapper dir)" >&2
+  exit 127
+fi
+_args=()
+if [ -n "$AIDE_PERMISSION_TOOL" ]; then
+  case " $* " in
+    *"--permission-prompt-tool"*) ;;
+    *) _args+=(--permission-prompt-tool "$AIDE_PERMISSION_TOOL") ;;
+  esac
+fi
+exec "$_real" "${_args[@]}" "$@"
+'''
+
+
 def write_client(directory: str) -> str:
-    """Write the `neural` client script to *directory* and return its path."""
+    """Write the `neural` and `claude` wrapper scripts to *directory*."""
     os.makedirs(directory, exist_ok=True)
-    path = os.path.join(directory, "neural")
-    with open(path, "w") as f:
-        f.write(_CLIENT_SRC)
-    os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-    return path
+    for name, src in [("neural", _CLIENT_SRC), ("claude", _CLAUDE_WRAPPER_SRC)]:
+        path = os.path.join(directory, name)
+        with open(path, "w") as f:
+            f.write(src)
+        os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    return os.path.join(directory, "neural")
