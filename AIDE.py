@@ -117,7 +117,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "4.8.6"
+VERSION      = "4.8.7"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -503,6 +503,10 @@ class NeuralRailOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "4.8.7": [
+        ("🛡️", "MCP requests reach the chat panel reliably", "Permission requests now route through a dedicated AgentTable.add_mcp_message() channel instead of last_agent_output. Previously they were routed via the box-scraping fallback path, which is intentionally disabled for stream-json agents (to prevent duplicate bubbles) — so MCP messages got silently dropped on every chat-panel task. Rendered with a purple border + 🛡️ MCP label so they're clearly distinct from agent text and user prompts."),
+        ("🔠", "Bold agent name when waiting", "Agents in 'Pending Answer' state now show their name in bold in the dashboard table — visual cue that something needs attention."),
+    ],
     "4.8.6": [
         ("●", "Status dot replaced (not mutated) on color change", "_update_in_place compares the current dot foreground; if it differs, the item is fully replaced. Mutating ForegroundRole left Qt's cached cell pixmap stale, so the dot color was frozen until a structural rebuild."),
         ("📐", "Action buttons only recreated on shape change", "Button cell widget was being torn down/rebuilt on every working↔thinking flip (~once per second), which flashed a new widget into the row. Now we only swap when the button SET changes (Answer ↔ Review)."),
@@ -6176,20 +6180,22 @@ class AIDEWindow(QMainWindow):
         tab_id, session = self._find_requesting_terminal()
         terminal_name = session.effective_title() if session else ""
 
-        # Surface the request in the agent's chat panel before the dialog opens —
-        # we must call _refresh_dashboard() synchronously because dlg.exec() blocks
-        # the main thread and timer-driven refreshes can't fire until it closes.
-        if session is not None:
+        # Surface the request in the agent's chat panel before the dialog opens.
+        # Use the dashboard's dedicated mcp channel — writing to last_agent_output
+        # was getting filtered out for stream-json agents.
+        if session is not None and tab_id >= 0:
             try:
                 input_str = json.dumps(tool_input, indent=2)
                 if len(input_str) > 400:
                     input_str = input_str[:400] + "\n…(truncated)"
             except Exception:
                 input_str = repr(tool_input)
-            session.last_agent_output = (
-                f"🛡️ Permission request: {tool_name}\n{input_str}")
-            session.last_waiting_at = time.time()
-            self._refresh_dashboard()
+            try:
+                self._agent_table.add_mcp_message(
+                    tab_id,
+                    f"Permission requested: {tool_name}\n{input_str}")
+            except Exception:
+                pass
             QApplication.processEvents()
 
         # Check always-allow rules before showing the dialog

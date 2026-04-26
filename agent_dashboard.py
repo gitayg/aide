@@ -27,6 +27,7 @@ _PANEL   = "#161b22"
 _GREEN   = "#3fb950"
 _RED     = "#f85149"
 _ORANGE  = "#f0883e"
+_PURPLE  = "#a371f7"   # MCP / permission requests — distinct from agent (surface) and user (accent)
 
 _STATUS_ORDER = ["waiting", "thinking", "working", "idle"]
 _STATUS_COLOR = {
@@ -365,6 +366,18 @@ class AgentChatPanel(QWidget):
                     f'padding:4px 9px;border-radius:8px;'
                     f'display:inline-block;max-width:88%;font-style:italic;">⏳ {text}</span>'
                     f'<div style="text-align:right;{ts_ss}">{tstr}</div></div>')
+            elif role == "mcp":
+                # Permission / tool requests from MCP — purple to clearly
+                # distinguish from agent text and user prompts.
+                parts.append(
+                    f'<div style="text-align:left;margin:5px 0;">'
+                    f'<div style="background:{_PURPLE}22;color:{_FG};'
+                    f'border-left:4px solid {_PURPLE};padding:6px 10px;'
+                    f'border-radius:4px;display:inline-block;max-width:92%;'
+                    f'white-space:pre-wrap;">'
+                    f'<span style="color:{_PURPLE};font-weight:bold;">🛡️ MCP</span><br>{text}'
+                    f'</div>'
+                    f'<div style="text-align:left;{ts_ss}">{tstr}</div></div>')
             elif role == "status":
                 parts.append(
                     f'<div style="text-align:center;margin:3px 0;'
@@ -549,6 +562,27 @@ class AgentTable(QWidget):
         """Stream-pacing refresh — updates the chat panel without touching the table."""
         self._sessions = sessions
         self._update_conversations(sessions)
+
+    def add_mcp_message(self, tid: int, text: str):
+        """Surface an MCP / permission request in the agent's chat panel.
+
+        Bypasses the box-scraping fallback (which is disabled for stream-json
+        agents) so MCP requests reach the user reliably. Called from AIDE.py
+        when a permission_prompt arrives, before the modal blocks the UI."""
+        conv = self._conversations.setdefault(tid, [])
+        conv.append({"role": "mcp", "text": text, "ts": time.time()})
+        if tid == self._selected_tid:
+            s = next((x for x in self._sessions if x.get("tid") == tid), None)
+            if s:
+                task_result = s.get("task_result", "")
+                if task_result:
+                    status = "task_error"
+                elif s.get("pending_validation"):
+                    status = "validate"
+                else:
+                    status = s.get("status", "idle")
+                self._chat_panel.set_agent(
+                    tid, s.get("name", f"Agent {tid}"), status, conv)
 
     # ── Tag management ─────────────────────────────────────────────────────────
 
@@ -779,6 +813,10 @@ class AgentTable(QWidget):
             neural_pfx = "🧠⇢ " if neural else ""
             name_str = neural_pfx + s.get("name", f"Agent {tid}") + badge
             name_item = _item(name_str)
+            # Bold the name when the agent is waiting for the user — visual cue
+            # that something needs attention.
+            if status == "waiting":
+                _f = name_item.font(); _f.setBold(True); name_item.setFont(_f)
             tooltip_parts = []
             if neural:
                 tooltip_parts.append("🧠 Connected to Neural Brain")
@@ -892,6 +930,10 @@ class AgentTable(QWidget):
             name_item = self._tbl.item(row, _COL_NAME)
             if name_item:
                 name_item.setText(name_str)
+                _f = name_item.font()
+                if _f.bold() != (status == "waiting"):
+                    _f.setBold(status == "waiting")
+                    name_item.setFont(_f)
                 tooltip_parts = []
                 if neural:
                     tooltip_parts.append("🧠 Connected to Neural Brain")
