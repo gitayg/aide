@@ -1226,25 +1226,38 @@ class AgentTable(QWidget):
                         tokens_for_task = max(0, cur_tokens - _prev["tokens_baseline"])
                         break
 
+                # The streaming bubble might not be `last` if an MCP message
+                # or other event was inserted between assistant updates. Find
+                # the in-flight streaming agent bubble explicitly.
+                streaming_bubble = None
+                for _m in reversed(conv):
+                    if _m.get("role") == "agent" and _m.get("streaming"):
+                        streaming_bubble = _m
+                        break
+
                 if stream_active:
-                    if last and last.get("role") == "agent" and last.get("streaming"):
-                        last["text"] = stream_text
-                        last["tokens"] = tokens_for_task
+                    if streaming_bubble is not None:
+                        streaming_bubble["text"] = stream_text
+                        streaming_bubble["tokens"] = tokens_for_task
                     else:
                         conv.append({"role": "agent", "text": stream_text,
                                      "streaming": True, "ts": now,
                                      "tokens": tokens_for_task})
                 elif task_result:
-                    if last and last.get("role") == "agent" and last.get("streaming"):
-                        conv.pop()
+                    # Finalize any in-flight streaming bubble — keep its
+                    # partial text — then add the error bubble.
+                    if streaming_bubble is not None:
+                        streaming_bubble["streaming"] = False
+                        if stream_text:
+                            streaming_bubble["text"] = stream_text
                     conv.append({"role": "error", "text": task_result, "ts": now,
                                  "tokens": tokens_for_task})
                 else:
-                    if last and last.get("role") == "agent" and last.get("streaming"):
-                        last["text"] = stream_text or last.get("text", "")
-                        last["streaming"] = False
-                        last["ts"] = now
-                        last["tokens"] = tokens_for_task
+                    if streaming_bubble is not None:
+                        streaming_bubble["text"] = stream_text or streaming_bubble.get("text", "")
+                        streaming_bubble["streaming"] = False
+                        streaming_bubble["ts"] = now
+                        streaming_bubble["tokens"] = tokens_for_task
                     elif stream_text:
                         conv.append({"role": "agent", "text": stream_text,
                                      "streaming": False, "ts": now,

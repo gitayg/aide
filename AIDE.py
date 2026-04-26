@@ -117,7 +117,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "4.10.3"
+VERSION      = "4.10.4"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -516,6 +516,10 @@ class NeuralRailOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "4.10.4": [
+        ("🪞", "Streaming bubble survives MCP interruption", "_update_conversations now searches the conversation in reverse for the in-flight streaming agent bubble — instead of only checking `last`. When an MCP permission request landed between two assistant events, the next assistant event saw `last.role == 'mcp'` and created a new bubble that repeated all the previous text (because stream_text is cumulative). The old bubble also stayed flagged streaming forever. Now the same bubble keeps getting updated through the whole stream, and gets finalized cleanly on result/error."),
+        ("🎯", "MCP requests find the right agent", "_find_requesting_terminal now prefers stream-active sessions over claude_working ones, and breaks ties by most-recent _ai_active_time. With multiple agents working concurrently, the permission popup + 🛡️ MCP bubble now land on the agent that actually triggered the request (the one whose stream is live), not the focused terminal."),
+    ],
     "4.10.3": [
         ("↕", "Click-sort restored on dashboard columns", "Re-enabled column header sorting (when not grouped). The in-place table updater now resolves each session to its current visual row via a tid → row map built fresh each tick, instead of assuming row N == sessions[N]. So Qt's click-sort can permute the rows however it likes and selection / status updates still land on the right agent."),
     ],
@@ -6263,11 +6267,28 @@ class AIDEWindow(QMainWindow):
         self._mcp_perm_signal.emit(perm_id, payload)
 
     def _find_requesting_terminal(self):
-        """Best-effort: find the terminal whose Claude is currently working."""
+        """Best-effort: find the terminal whose Claude is currently working.
+
+        Heuristic priority:
+          1. Stream-active sessions (chat-panel -p tasks); pick the most
+             recently dispatched. This is the most reliable signal — a stream
+             is active iff a task is in flight, and stream events bump
+             _ai_active_time so the most recent one is who just called Edit.
+          2. Single working/thinking interactive session.
+          3. Focused tab as fallback.
+        """
+        streaming = [(tid, s) for tid, s in self.sessions.items()
+                     if getattr(s, "stream_active", False)]
+        if streaming:
+            tid, s = max(streaming, key=lambda kv: kv[1]._ai_active_time)
+            return tid, s
         working = [(tid, s) for tid, s in self.sessions.items()
                    if s.claude_working or s.claude_thinking]
         if len(working) == 1:
             return working[0]
+        if working:
+            tid, s = max(working, key=lambda kv: kv[1]._ai_active_time)
+            return tid, s
         ftid = self._focused_tid()
         if ftid >= 0 and ftid in self.sessions:
             return ftid, self.sessions[ftid]
