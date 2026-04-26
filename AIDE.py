@@ -117,7 +117,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "4.8.8"
+VERSION      = "4.9.0"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -503,6 +503,11 @@ class NeuralRailOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "4.9.0": [
+        ("🛡️", "MCP server registration fixed (root cause of stuck streams)", "Claude Code stopped honoring `mcpServers` in ~/.claude/settings.json. AIDE now uses `claude mcp add --transport sse --scope user aide <url>` on every startup, which writes to ~/.claude.json in the format the runtime actually reads. Without this, Edit/Bash from -p tasks failed with 'MCP tool mcp__aide__permission_prompt not found' and the stream watchdog fired after 120 s. Found by inspecting app.log."),
+        ("🟢", "MCP status indicator in toolbar", "Bottom toolbar now shows ● MCP :port (green) when registered, ○ MCP (red) when not. Hover for the URL and recovery hint. Refreshed every 10 s."),
+        ("📝", "Multi-line chat input", "Chat panel input is now a QTextEdit. Enter sends, Shift+Enter (or Cmd/Alt+Enter) inserts a newline. Auto-grows from 32 px to 130 px based on content."),
+    ],
     "4.8.8": [
         ("🔒", "Click-sort disabled, in-place updates safe", "QHeaderView click-sort and indicator are off; setSortingEnabled(False) is permanent. Qt's internal sort was reshuffling rows on every status change because sort roles updated, which made the in-place updater's `rows[N]` no longer match the table's visual row N — clicking row 'AIDE' was selecting a different agent. Display order is now exactly what _filtered() returns: validation-pinned then by tid, stable across all refreshes."),
     ],
@@ -898,6 +903,8 @@ C_FG      = QColor("#e6edf3")
 C_CURSOR  = QColor("#58a6ff")
 C_ACCENT  = QColor("#58a6ff")
 C_WARN    = QColor("#d29922")
+C_GREEN   = QColor("#3fb950")
+C_RED     = QColor("#f85149")
 C_PANEL   = QColor("#161b22")
 C_SURFACE = QColor("#21262d")
 C_MUTED   = QColor("#7d8590")
@@ -3384,6 +3391,13 @@ class HotkeyBar(QWidget):
         self._btn_font_inc.clicked.connect(lambda: self._bump_font(+1))
         lay.addWidget(self._btn_font_dec); lay.addWidget(self._btn_font_inc)
         lay.addStretch()
+        # MCP server status indicator
+        self._mcp_lbl = QLabel("◌ MCP")
+        self._mcp_lbl.setStyleSheet(
+            f"color:{C_MUTED.name()};font-size:11px;background:transparent;"
+            f"border:none;padding:0 8px;")
+        self._mcp_lbl.setToolTip("AIDE MCP server status (port for Claude permission prompts)")
+        lay.addWidget(self._mcp_lbl)
         self._info=QLabel(f"  {APP_NAME} v{VERSION}")
         self._info.setStyleSheet(f"color:{C_MUTED.name()};font-size:11px;background:transparent;border:none;")
         lay.addWidget(self._info)
@@ -3405,6 +3419,27 @@ class HotkeyBar(QWidget):
         self.font_size_changed.emit(self._cur_font)
 
     def update_info(self,text:str): self._info.setText(f"  {text}")
+
+    def set_mcp_status(self, on: bool, port: int = 0):
+        """Update the MCP server indicator in the bottom toolbar."""
+        if on:
+            self._mcp_lbl.setText(f"● MCP :{port}")
+            self._mcp_lbl.setStyleSheet(
+                f"color:{C_GREEN.name()};font-size:11px;background:transparent;"
+                f"border:none;padding:0 8px;font-weight:bold;")
+            self._mcp_lbl.setToolTip(
+                f"AIDE MCP server registered with Claude Code\n"
+                f"Listening on http://127.0.0.1:{port}/mcp/sse\n"
+                f"Permission requests will pop up in the chat panel.")
+        else:
+            self._mcp_lbl.setText("○ MCP")
+            self._mcp_lbl.setStyleSheet(
+                f"color:{C_RED.name()};font-size:11px;background:transparent;"
+                f"border:none;padding:0 8px;font-weight:bold;")
+            self._mcp_lbl.setToolTip(
+                "AIDE MCP server NOT registered with Claude Code.\n"
+                "Permission requests from -p tasks will fail with "
+                "'tool not found'. Run: claude mcp list to verify.")
 
     def set_btn_active(self,action:str,on:bool):
         if btn:=self._btn_map.get(action): btn.set_active(on)
@@ -5259,6 +5294,7 @@ class AIDEWindow(QMainWindow):
                                      on_permission=self._on_permission_request)
         self._mcp_perm_signal.connect(self._show_permission_dialog)
         self._neural_port = self._neural_bus.start()
+        self._mcp_registered = False  # set by _write_mcp_config
         self._neural_client_dir = str(Path(sys.argv[0]).parent / "_neural_bin")
         write_client(self._neural_client_dir)
         self._write_mcp_config()
@@ -5266,10 +5302,12 @@ class AIDEWindow(QMainWindow):
         self._start_dashboard()
         self._hotkey_bar.set_btn_active("toggle_notes", self._notes_vis)
         self._hotkey_bar.set_btn_active("toggle_dashboard", True)
+        self._hotkey_bar.set_mcp_status(self._mcp_registered, self._neural_port)
         for interval,fn in [(100,self._process_events),(1000,self._check_idle),
                              (500,self._refresh_cards),(1000,self._refresh_dashboard),
                              (250,self._refresh_dashboard_stream),
-                             (30000,self._save_session),(5000,self._check_for_update)]:
+                             (30000,self._save_session),(5000,self._check_for_update),
+                             (10000,self._refresh_mcp_status)]:
             t=QTimer(self); t.timeout.connect(fn); t.start(interval)
         self._load_session()
         # Initial restore is done — any further tab switches must not flash
@@ -5718,6 +5756,13 @@ class AIDEWindow(QMainWindow):
             "pending_validation": s.pending_validation,
             "validation_note":    s.validation_note,
         }
+
+    def _refresh_mcp_status(self):
+        """Update the MCP status indicator in the bottom toolbar."""
+        try:
+            self._hotkey_bar.set_mcp_status(self._mcp_registered, self._neural_port)
+        except Exception:
+            pass
 
     def _refresh_dashboard_stream(self):
         """Lighter refresh — only updates conversations/streaming in the chat panel.
@@ -6224,18 +6269,41 @@ class AIDEWindow(QMainWindow):
         self._neural_bus.resolve_permission(perm_id, approved)
 
     def _write_mcp_config(self):
-        settings_path = Path.home() / ".claude" / "settings.json"
-        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        """Register the AIDE MCP server with Claude Code.
+
+        Claude Code stopped honoring `mcpServers` in ~/.claude/settings.json
+        (those entries don't show up in `claude mcp list` and `--permission-prompt-tool
+        mcp__aide__permission_prompt` fails with 'tool not found'). Use the
+        official `claude mcp add` CLI instead, which writes to ~/.claude.json
+        in the format the runtime actually reads."""
+        url = f"http://127.0.0.1:{self._neural_port}/mcp/sse"
+        # Idempotent re-register (port may change between AIDE launches).
         try:
-            cfg = json.loads(settings_path.read_text()) if settings_path.exists() else {}
+            subprocess.run(["claude", "mcp", "remove", "aide", "--scope", "user"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           timeout=5)
         except Exception:
-            cfg = {}
-        mcp_servers = cfg.setdefault("mcpServers", {})
-        mcp_servers["aide"] = {
-            "type": "sse",
-            "url":  f"http://127.0.0.1:{self._neural_port}/mcp/sse",
-        }
-        settings_path.write_text(json.dumps(cfg, indent=2))
+            pass
+        try:
+            subprocess.run(
+                ["claude", "mcp", "add", "--transport", "sse",
+                 "--scope", "user", "aide", url],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=5)
+            self._mcp_registered = True
+        except Exception:
+            self._mcp_registered = False
+        # Keep the legacy settings.json entry too — harmless and useful for
+        # older Claude Code versions that may still read it.
+        try:
+            settings_path = Path.home() / ".claude" / "settings.json"
+            settings_path.parent.mkdir(parents=True, exist_ok=True)
+            cfg = json.loads(settings_path.read_text()) if settings_path.exists() else {}
+            mcp_servers = cfg.setdefault("mcpServers", {})
+            mcp_servers["aide"] = {"type": "sse", "url": url}
+            settings_path.write_text(json.dumps(cfg, indent=2))
+        except Exception:
+            pass
 
     def _on_neural_delivered(self, from_sid: int, to_sid: int, content: str):
         """Injects neural message into target terminal PTY and animates the rail."""

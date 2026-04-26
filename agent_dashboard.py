@@ -162,6 +162,44 @@ class _ValidationDialog(QDialog):
         self.close()
 
 
+class _ChatInput(QTextEdit):
+    """Multi-line text input for the chat panel.
+
+    Enter sends the message. Shift+Enter (or Cmd+Enter) inserts a newline.
+    Shrinks/grows up to 5 lines based on content."""
+    submitted = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAcceptRichText(False)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setTabChangesFocus(True)
+        self._min_h = 32
+        self._max_h = 130
+        self.setFixedHeight(self._min_h)
+        self.document().contentsChanged.connect(self._auto_resize)
+
+    def _auto_resize(self):
+        doc_h = int(self.document().size().height()) + 10
+        new_h = max(self._min_h, min(self._max_h, doc_h))
+        if new_h != self.height():
+            self.setFixedHeight(new_h)
+
+    def keyPressEvent(self, e):
+        if e.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            mods = e.modifiers()
+            if mods & (Qt.KeyboardModifier.ShiftModifier
+                      | Qt.KeyboardModifier.MetaModifier
+                      | Qt.KeyboardModifier.AltModifier):
+                # Newline
+                super().keyPressEvent(e)
+            else:
+                self.submitted.emit()
+            return
+        super().keyPressEvent(e)
+
+
 class AgentChatPanel(QWidget):
     """Right-side conversation panel — shows task history and agent responses."""
     task_sent = pyqtSignal(int, str)   # tid, task text
@@ -231,16 +269,19 @@ class AgentChatPanel(QWidget):
 
         # ── input bar ─────────────────────────────────────────────────────────
         inp_bar = QWidget()
-        inp_bar.setFixedHeight(52)
         inp_bar.setStyleSheet(
             f"background:{_PANEL};border-top:1px solid {_SURFACE};")
         il = QHBoxLayout(inp_bar)
         il.setContentsMargins(10, 8, 10, 8)
         il.setSpacing(6)
-        self._inp = QLineEdit()
-        self._inp.setPlaceholderText("Send a task…")
-        self._inp.setStyleSheet(_SEARCH_SS)
-        self._inp.returnPressed.connect(self._send)
+        self._inp = _ChatInput()
+        self._inp.setPlaceholderText("Send a task…  (Shift+Enter for newline)")
+        self._inp.setStyleSheet(
+            f"QTextEdit{{background:{_SURFACE};color:{_FG};"
+            f"border:1px solid {_SURFACE};border-radius:4px;"
+            f"font-size:12px;padding:4px;}}"
+            f"QTextEdit:focus{{border-color:{_ACCENT};}}")
+        self._inp.submitted.connect(self._send)
         self._inp.setEnabled(False)
         il.addWidget(self._inp, 1)
         self._send_btn = QPushButton("Send")
@@ -394,7 +435,7 @@ class AgentChatPanel(QWidget):
             sb.setValue(sb.maximum())
 
     def _send(self):
-        text = self._inp.text().strip()
+        text = self._inp.toPlainText().strip()
         if text and self._tid >= 0:
             self.task_sent.emit(self._tid, text)
             self._inp.clear()
