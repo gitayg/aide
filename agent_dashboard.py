@@ -29,18 +29,20 @@ _ORANGE  = "#f0883e"
 
 _STATUS_ORDER = ["waiting", "thinking", "working", "idle"]
 _STATUS_COLOR = {
-    "waiting":  _ORANGE,
-    "thinking": _ACCENT,
-    "working":  _GREEN,
-    "idle":     _MUTED,
-    "validate": _RED,
+    "waiting":    _ORANGE,
+    "thinking":   _ACCENT,
+    "working":    _GREEN,
+    "idle":       _MUTED,
+    "validate":   _RED,
+    "task_error": _RED,
 }
 _STATUS_LABEL = {
-    "waiting":  "Pending Answer",
-    "thinking": "Thinking",
-    "working":  "Working",
-    "idle":     "Idle",
-    "validate": "Needs Validation",
+    "waiting":    "Pending Answer",
+    "thinking":   "Thinking",
+    "working":    "Working",
+    "idle":       "Idle",
+    "validate":   "Needs Validation",
+    "task_error": "Task Error",
 }
 
 _TBL_SS = f"""
@@ -104,7 +106,7 @@ def _fmt_age(ts: float) -> str:
     return f"{int(age/86400)}d ago"
 
 
-_STATUS_SORT = {"validate": 0, "waiting": 1, "thinking": 2, "working": 3, "idle": 4}
+_STATUS_SORT = {"task_error": 0, "validate": 1, "waiting": 2, "thinking": 3, "working": 4, "idle": 5}
 _SORT_ROLE   = Qt.ItemDataRole.UserRole + 1
 
 
@@ -407,8 +409,14 @@ class AgentTable(QWidget):
         self._tbl.setSortingEnabled(False)
         self._tbl.setRowCount(len(sessions))
         for row, s in enumerate(sessions):
-            tid    = s.get("tid", -1)
-            status = "validate" if s.get("pending_validation") else s.get("status", "idle")
+            tid         = s.get("tid", -1)
+            task_result = s.get("task_result", "")
+            if task_result:
+                status = "task_error"
+            elif s.get("pending_validation"):
+                status = "validate"
+            else:
+                status = s.get("status", "idle")
             color  = _STATUS_COLOR.get(status, _MUTED)
             label  = _STATUS_LABEL.get(status, status.capitalize())
 
@@ -435,9 +443,17 @@ class AgentTable(QWidget):
             sid = s.get("session_id", "")
             if sid:
                 cmd_item.setToolTip(f"Session: {sid}")
+            neural = s.get("neural_on_bus", False)
+            name_str = ("⬡ " if neural else "") + s.get("name", f"Agent {tid}")
+            name_item = _item(name_str)
+            if neural:
+                name_item.setToolTip("Connected to Neural Brain")
+            status_item = _item(label, _STATUS_SORT.get(status, 99))
+            if task_result:
+                status_item.setToolTip(task_result)
             self._tbl.setItem(row, _COL_DOT,    dot)
-            self._tbl.setItem(row, _COL_NAME,   _item(s.get("name", f"Agent {tid}")))
-            self._tbl.setItem(row, _COL_STATUS, _item(label, _STATUS_SORT.get(status, 99)))
+            self._tbl.setItem(row, _COL_NAME,   name_item)
+            self._tbl.setItem(row, _COL_STATUS, status_item)
             self._tbl.setItem(row, _COL_ACTIVE, _item(_fmt_age(ts), -ts))
             self._tbl.setItem(row, _COL_TAGS,   _item(", ".join(s.get("tags", []))))
             self._tbl.setItem(row, _COL_DIR,    _item(s.get("dir", "")))
@@ -446,7 +462,7 @@ class AgentTable(QWidget):
             self._tbl.setItem(row, _COL_TOKENS, _item(tok_str, tokens))
             self._tbl.setItem(row, _COL_ACCT,   _item(s.get("profile", "") or "default"))
 
-            if status == "validate":
+            if status in ("validate", "task_error"):
                 bg = QColor(_RED + "22")
             elif status == "waiting":
                 bg = QColor(_ORANGE + "18")

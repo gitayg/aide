@@ -117,7 +117,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "4.3.2"
+VERSION      = "4.4.0"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -477,6 +477,12 @@ class NeuralRailOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "4.4.0": [
+        ("⚠", "Task error shown as answer in dashboard", "When a task dispatch fails (e.g. agent not running), the Status column turns red with 'Task Error' and a tooltip shows the reason. Sending a new task clears it."),
+        ("⬡", "Neural Brain indicator in agent table", "Agents connected to the Neural Brain show a ⬡ prefix on their name in the dashboard."),
+        ("🐙", "GitHub project field per agent", "Set owner/repo in the agent settings panel. Combined with the Auto git pull option, AIDE prepends git pull --ff-only before each task dispatch."),
+        ("🔐", "Per-agent tool permissions editor", "Edit the allow rules for an agent's .claude/settings.local.json directly from the settings panel. Saves to <agent-dir>/.claude/settings.local.json on click."),
+    ],
     "4.3.2": [
         ("↕", "Sortable columns in agent table", "Click any column header to sort. Status and dot sort by priority (Validate → Waiting → Working → Idle); Last Active and Tokens sort numerically. Click again to reverse."),
     ],
@@ -1401,6 +1407,9 @@ class TermSession:
         self._input_buf=bytearray(); self._output_tail=""
         self.waiting_input=False; self.scroll_offset=0; self.last_ping_time:float=0.0; self.last_waiting_at:float=0.0
         self.pending_validation:bool=False; self.validation_note:str=""
+        self.task_result:str=""          # last task dispatch result / error shown in dashboard
+        self.github_project:str=""       # e.g. "owner/repo" for this agent
+        self.auto_git_pull:bool=False    # prepend git pull before each task dispatch
         self.claude_resume_cmd:str=""; self.claude_working:bool=False; self.claude_thinking:bool=False
         self._ai_active_time:float=0.0   # last time working/thinking was detected
         self._in_response_box:bool=False  # True between ╭─ and ╰─
@@ -1651,6 +1660,7 @@ class TermSession:
                  github_token_name=self.github_token_name,
                  claude_profile=self.claude_profile, claude_model=self.claude_model,
                  claude_args=self.claude_args, tokens_used=self.tokens_used,
+                 github_project=self.github_project, auto_git_pull=self.auto_git_pull,
                  browser_url=self.browser_url,watching=self.watching,
                  cwd=self.info.cwd_full or self.info.cwd,
                  ssh_host=self.info.ssh_host,last_cmd=self.info.last_cmd)
@@ -1666,6 +1676,7 @@ class TermSession:
         s.github_token_name=d.get("github_token_name","")
         s.claude_profile=d.get("claude_profile",""); s.claude_model=d.get("claude_model","")
         s.claude_args=d.get("claude_args",""); s.tokens_used=d.get("tokens_used",0)
+        s.github_project=d.get("github_project",""); s.auto_git_pull=d.get("auto_git_pull",False)
         s.browser_url=d.get("browser_url",""); s.watching=d.get("watching",False)
         stored_cwd=d.get("cwd","")
         s.info.cwd_full=stored_cwd
@@ -3405,6 +3416,47 @@ class NotesPanel(QWidget):
         login_btn.clicked.connect(lambda: self.claude_login_requested.emit())
         al.addWidget(login_btn)
 
+        # ── GitHub project ─────────────────────────────────────────────────────
+        gh_proj_hdr = QLabel("GitHub Project")
+        gh_proj_hdr.setStyleSheet(f"color:{C_ACCENT.name()};font-weight:bold;font-size:12px;"
+                                   f"background:transparent;padding-top:10px;")
+        al.addWidget(gh_proj_hdr)
+        gh_proj_lbl = QLabel("Repository (owner/repo)")
+        gh_proj_lbl.setStyleSheet(_auto_lbl_css)
+        al.addWidget(gh_proj_lbl)
+        self._github_project = QLineEdit()
+        self._github_project.setPlaceholderText("e.g. myorg/myrepo")
+        self._github_project.setStyleSheet(_auto_edit_css)
+        al.addWidget(self._github_project)
+        self._auto_git_pull = QCheckBox("Auto git pull before each task")
+        self._auto_git_pull.setStyleSheet(f"color:{C_FG.name()};font-size:11px;background:transparent;")
+        al.addWidget(self._auto_git_pull)
+
+        # ── Claude Code permissions for this agent's directory ─────────────────
+        perm_hdr = QLabel("MCP / Tool Permissions")
+        perm_hdr.setStyleSheet(f"color:{C_ACCENT.name()};font-weight:bold;font-size:12px;"
+                                f"background:transparent;padding-top:10px;")
+        al.addWidget(perm_hdr)
+        perm_hint = QLabel("Allow rules written to <agent-dir>/.claude/settings.local.json — one rule per line.")
+        perm_hint.setStyleSheet(f"color:{C_MUTED.name()};font-size:10px;background:transparent;")
+        perm_hint.setWordWrap(True)
+        al.addWidget(perm_hint)
+        self._perm_edit = QTextEdit()
+        self._perm_edit.setPlaceholderText('Bash(git *)\nBash(npm *)\nEdit(**)')
+        self._perm_edit.setFixedHeight(90)
+        self._perm_edit.setStyleSheet(
+            f"QTextEdit{{background:{C_BG.name()};color:{C_FG.name()};"
+            f"border:1px solid {C_SURFACE.name()};border-radius:3px;"
+            f"font-family:{FONT_FAMILY};font-size:11px;padding:4px;}}")
+        al.addWidget(self._perm_edit)
+        perm_save_btn = QPushButton("Save Permissions")
+        perm_save_btn.setStyleSheet(
+            f"QPushButton{{background:{C_SURFACE.name()};color:{C_FG.name()};"
+            f"border:none;border-radius:3px;font-size:11px;padding:4px 8px;}}"
+            f"QPushButton:hover{{background:{C_ACCENT.name()}44;color:{C_ACCENT.name()};}}")
+        perm_save_btn.clicked.connect(self._save_permissions)
+        al.addWidget(perm_save_btn)
+
         al.addStretch()
 
         splitter.addWidget(notes_w); splitter.addWidget(tasks_w)
@@ -3485,7 +3537,8 @@ class NotesPanel(QWidget):
 
     def load(self,notes:str,tasks:str="",variables:Optional[Dict[str,str]]=None,
              autostart_dir:str="",autostart_cmd:str="",github_token_name:str="",
-             claude_profile:str="",claude_model:str="",claude_args:str=""):
+             claude_profile:str="",claude_model:str="",claude_args:str="",
+             github_project:str="",auto_git_pull:bool=False):
         self._notes_edit.setPlainText(notes)
         self._numbering=True
         self._tasks_edit.setPlainText(tasks)
@@ -3505,6 +3558,9 @@ class NotesPanel(QWidget):
         idx = max(0, self._claude_model.findData(claude_model or ""))
         self._claude_model.setCurrentIndex(idx)
         self._claude_args.setText(claude_args or "")
+        self._github_project.setText(github_project or "")
+        self._auto_git_pull.setChecked(auto_git_pull)
+        self._load_permissions(autostart_dir or "")
 
     def set_github_token_names(self, names: list, current: str):
         """Populate the per-tab token selector with available token names."""
@@ -3528,6 +3584,36 @@ class NotesPanel(QWidget):
     def get_claude_profile(self)->str: return self._claude_profile.text().strip()
     def get_claude_model(self)->str:   return self._claude_model.currentData() or ""
     def get_claude_args(self)->str:    return self._claude_args.text().strip()
+    def get_github_project(self)->str: return self._github_project.text().strip()
+    def get_auto_git_pull(self)->bool: return self._auto_git_pull.isChecked()
+
+    def _save_permissions(self):
+        d = self.get_autostart_dir()
+        if not d:
+            return
+        rules = [r.strip() for r in self._perm_edit.toPlainText().splitlines() if r.strip()]
+        settings_dir = Path(d).expanduser() / ".claude"
+        settings_dir.mkdir(parents=True, exist_ok=True)
+        settings_path = settings_dir / "settings.local.json"
+        try:
+            existing = json.loads(settings_path.read_text()) if settings_path.exists() else {}
+        except Exception:
+            existing = {}
+        perms = existing.setdefault("permissions", {})
+        perms["allow"] = rules
+        settings_path.write_text(json.dumps(existing, indent=2))
+
+    def _load_permissions(self, agent_dir: str):
+        if not agent_dir:
+            self._perm_edit.setPlainText("")
+            return
+        settings_path = Path(agent_dir).expanduser() / ".claude" / "settings.local.json"
+        try:
+            data = json.loads(settings_path.read_text()) if settings_path.exists() else {}
+            rules = data.get("permissions", {}).get("allow", [])
+            self._perm_edit.setPlainText("\n".join(rules))
+        except Exception:
+            self._perm_edit.setPlainText("")
     def get_variables(self)->Optional[Dict[str,str]]:
         """Return current variables, or None if the vault is locked.
 
@@ -4934,9 +5020,11 @@ class AIDEWindow(QMainWindow):
         s.tasks = self._notes_panel.get_tasks()
         s.autostart_dir = self._notes_panel.get_autostart_dir()
         s.autostart_cmd = self._notes_panel.get_autostart_cmd()
-        s.claude_profile = self._notes_panel.get_claude_profile()
-        s.claude_model   = self._notes_panel.get_claude_model()
-        s.claude_args    = self._notes_panel.get_claude_args()
+        s.claude_profile  = self._notes_panel.get_claude_profile()
+        s.claude_model    = self._notes_panel.get_claude_model()
+        s.claude_args     = self._notes_panel.get_claude_args()
+        s.github_project  = self._notes_panel.get_github_project()
+        s.auto_git_pull   = self._notes_panel.get_auto_git_pull()
         if self._vault.is_unlocked():
             s.github_token_name = self._notes_panel.get_github_token_name()
         v = self._notes_panel.get_variables()
@@ -4951,7 +5039,8 @@ class AIDEWindow(QMainWindow):
         self._notes_panel.set_github_token_names(token_names, s.github_token_name)
         self._notes_panel.load(s.notes, s.tasks, s.variables,
                                s.autostart_dir, s.autostart_cmd, s.github_token_name,
-                               s.claude_profile, s.claude_model, s.claude_args)
+                               s.claude_profile, s.claude_model, s.claude_args,
+                               s.github_project, s.auto_git_pull)
 
     def _set_focused_pane(self, idx: int):
         """Change which pane is focused, syncing notes panel as needed."""
@@ -5145,6 +5234,9 @@ class AIDEWindow(QMainWindow):
             "dir":                s.autostart_dir or s.info.cwd_full or s.info.cwd or "",
             "cmd":                s.claude_resume_cmd or s.autostart_cmd or "",
             "session_id":         session_id,
+            "task_result":        s.task_result or "",
+            "github_project":     s.github_project or "",
+            "neural_on_bus":      s.neural_on_bus,
             "profile":            s.claude_profile or "",
             "model":              s.claude_model or "",
             "tokens_used":        s.tokens_used,
@@ -5209,7 +5301,12 @@ class AIDEWindow(QMainWindow):
         Claude exits after the task completes, freeing memory.
         """
         s = self.sessions.get(tid)
-        if not s or not s.alive: return
+        if not s:
+            return
+        if not s.alive:
+            s.task_result = "⚠ Agent not running — launch it first"
+            return
+        s.task_result = ""
         d    = (s.autostart_dir or "").strip()
         args = self._model_flag(s)
         if s.claude_args:
@@ -5220,8 +5317,9 @@ class AIDEWindow(QMainWindow):
             payload += f"stty -echo; {gh_exports} stty echo\n".encode("utf-8")
         if d:
             payload += f"cd {shlex.quote(d)}\n".encode("utf-8")
+        if s.auto_git_pull and d:
+            payload += b"git pull --ff-only 2>/dev/null || true\n"
         safe_task = task.replace("'", "'\\''")
-        # prefer explicit --resume <id> if known; fall back to --continue
         resume_base = s.claude_resume_cmd or "claude --continue"
         payload += f"{resume_base}{args} -p '{safe_task}'\n".encode("utf-8")
         def _write(t=tid, p=payload):
