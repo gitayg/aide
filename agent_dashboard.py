@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QBrush, QCursor
+from PyQt6.QtWidgets import QApplication
 
 # ── Theme (mirrors AIDE.py constants) ─────────────────────────────────────────
 _BG      = "#0d1117"
@@ -328,25 +329,35 @@ class AgentTable(QWidget):
 
     def _clear_tag_filter(self):
         self._tag_filter.clear()
+        self._sync_tag_buttons()
         self._all_tag_btn.setChecked(True)
-        for i in range(1, self._tag_lay.count()):
-            w = self._tag_lay.itemAt(i).widget()
-            if w:
-                w.setChecked(False)
-                w.setStyleSheet(self._tag_btn_ss(False))
         self._repopulate()
 
     def _toggle_tag(self, tag: str, btn: QPushButton):
-        if tag in self._tag_filter:
-            self._tag_filter.discard(tag)
-            btn.setChecked(False)
-            btn.setStyleSheet(self._tag_btn_ss(False))
+        shift = bool(QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier)
+        if not shift:
+            # Single-select: clear all others, then toggle this one
+            already_only = self._tag_filter == {tag}
+            self._tag_filter.clear()
+            self._sync_tag_buttons()
+            if not already_only:
+                self._tag_filter.add(tag)
         else:
-            self._tag_filter.add(tag)
-            btn.setChecked(True)
-            btn.setStyleSheet(self._tag_btn_ss(True))
+            if tag in self._tag_filter:
+                self._tag_filter.discard(tag)
+            else:
+                self._tag_filter.add(tag)
+        self._sync_tag_buttons()
         self._all_tag_btn.setChecked(not self._tag_filter)
         self._repopulate()
+
+    def _sync_tag_buttons(self):
+        for i in range(1, self._tag_lay.count()):
+            w = self._tag_lay.itemAt(i).widget()
+            if isinstance(w, QPushButton):
+                active = w.text() in self._tag_filter
+                w.setChecked(active)
+                w.setStyleSheet(self._tag_btn_ss(active))
 
     def _on_search(self, text: str):
         self._search = text.lower()

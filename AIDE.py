@@ -117,7 +117,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "4.3.0"
+VERSION      = "4.3.1"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -477,6 +477,9 @@ class NeuralRailOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "4.3.1": [
+        ("🏷️", "Tag filter — single-select by default", "Clicking a tag filter chip now selects only that tag; hold Shift to add/remove additional tags for multi-select."),
+    ],
     "4.3.0": [
         ("◀", "Back-to-dashboard button in terminal view", "A '◀ Dashboard' button is now always visible at the top of the terminal view — click it to return to the agent table without using the hotkey bar."),
         ("⛔", "Close guard when agents are working", "If any agent is actively working, AIDE prompts before closing so you can't accidentally kill a running task."),
