@@ -117,7 +117,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "4.8.0"
+VERSION      = "4.8.1"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -477,6 +477,14 @@ class NeuralRailOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "4.8.1": [
+        ("✋", "Chat panel no longer flickers", "AgentChatPanel._render now compares a content signature against the last render and skips setHtml when nothing changed — eliminates the 4 Hz repaint storm."),
+        ("🪞", "No more duplicate chat bubbles", "AI_PATS handler no longer overwrites last_agent_output that DONE_RE just captured, AND the dashboard's box-scraping fallback now skips for agents that have any stream-json activity (stream events are the source of truth)."),
+        ("🛡️", "Permission requests appear in chat panel", "Dashboard refresh + processEvents fires synchronously before the modal dialog opens, so the 🛡️ request bubble is visible while the user decides."),
+        ("💾", "Tags actually save on Close", "Close button is now 'Save & Close' — clicking it commits tag/title/notes edits instead of discarding them."),
+        ("🎯", "Selection no longer wanders", "Table repopulate now blocks selectionChanged signals and restores the selected agent by tid — the row highlight stays on the agent you clicked instead of jumping every refresh."),
+        ("🔓", "Permission popups now reach the user from -p tasks", "_run_agent_task explicitly passes --permission-prompt-tool mcp__aide__permission_prompt on the command line. The wrapper-based injection only worked for interactive sessions; stream-json -p was bypassing it, so Edit/Bash requests got silently blocked instead of opening the AIDE permission dialog."),
+    ],
     "4.8.0": [
         ("🧹", "Dashboard-first UX", "Left sidebar (terminal cards), right notes panel, Split button, SideBar button, and Uber mode all removed from the toolbar/layout. The dashboard is now the primary view; double-click an agent to edit settings, or click ◀ Dashboard from a terminal."),
         ("🔄", "Dialog Save auto-refreshes table", "Editing tags / title / status fields in the agent dialog now refreshes the table immediately on Save — no 1-second delay."),
@@ -1596,15 +1604,16 @@ class TermSession:
             if pat.search(clean):
                 self.waiting_input=True; self.claude_working=False; self.claude_thinking=False
                 self.last_ping_time=time.time(); self.last_waiting_at=self.last_ping_time
-                # Capture the prompt context for the chat panel: prefer the response
-                # box buffer if we have one, otherwise tail of clean output (last 40 lines).
-                if self._response_buf.strip():
-                    self.last_agent_output = self._response_buf.strip()
-                    self._response_buf = ""
-                else:
-                    _tail_clean = _ANSI_RE.sub('', self._output_tail)
-                    _lines = [ln.rstrip() for ln in _tail_clean.splitlines() if ln.strip()]
-                    self.last_agent_output = "\n".join(_lines[-40:]).strip() or msg
+                # Only fill last_agent_output if DONE_RE didn't already capture a
+                # response — overwriting would create duplicate chat-panel bubbles.
+                if not self.last_agent_output:
+                    if self._response_buf.strip():
+                        self.last_agent_output = self._response_buf.strip()
+                        self._response_buf = ""
+                    else:
+                        _tail_clean = _ANSI_RE.sub('', self._output_tail)
+                        _lines = [ln.rstrip() for ln in _tail_clean.splitlines() if ln.strip()]
+                        self.last_agent_output = "\n".join(_lines[-40:]).strip() or msg
                 if not was_waiting:
                     _EVENT_Q.put(("blink",self.tab_id,msg))
                     _EVENT_Q.put(("notif",self.tab_id,msg,self._output_tail))
@@ -5026,9 +5035,9 @@ class AgentEditDialog(QDialog):
                    f"border:none;border-radius:4px;font-size:12px;padding:6px 14px;}}"
                    f"QPushButton:hover{{background:{C_ACCENT.name()}44;color:{C_ACCENT.name()};}}")
         btn_bar = QHBoxLayout(); btn_bar.setSpacing(8)
-        close_btn = QPushButton("Close")
+        close_btn = QPushButton("Save & Close")
         close_btn.setStyleSheet(_btn_ss)
-        close_btn.clicked.connect(self.reject)
+        close_btn.clicked.connect(lambda: (self._save(), self.reject()))
         save_btn = QPushButton("Save")
         save_btn.setStyleSheet(_btn_ss)
         save_btn.clicked.connect(self._save)
@@ -5699,7 +5708,13 @@ class AIDEWindow(QMainWindow):
             payload += b"git pull --ff-only 2>/dev/null || true\n"
         safe_task = task.replace("'", "'\\''")
         resume_base = s.claude_resume_cmd or "claude --continue"
-        payload += (f"{resume_base}{args} --output-format stream-json --verbose "
+        # --permission-prompt-tool routes tool-permission requests through the
+        # MCP server we expose, so the user gets a popup instead of a silent block.
+        # Stream-json does NOT pick this up from the wrapper / settings.json
+        # automatically — the flag must be on the command line.
+        payload += (f"{resume_base}{args} "
+                    f"--permission-prompt-tool mcp__aide__permission_prompt "
+                    f"--output-format stream-json --verbose "
                     f"-p '{safe_task}'\n").encode("utf-8")
         s.stream_active = True
         s.stream_text = ""
@@ -6055,7 +6070,8 @@ class AIDEWindow(QMainWindow):
         terminal_name = session.effective_title() if session else ""
 
         # Surface the request in the agent's chat panel before the dialog opens —
-        # the user can see what tool was asked even after they answer the modal.
+        # we must call _refresh_dashboard() synchronously because dlg.exec() blocks
+        # the main thread and timer-driven refreshes can't fire until it closes.
         if session is not None:
             try:
                 input_str = json.dumps(tool_input, indent=2)
@@ -6066,6 +6082,8 @@ class AIDEWindow(QMainWindow):
             session.last_agent_output = (
                 f"🛡️ Permission request: {tool_name}\n{input_str}")
             session.last_waiting_at = time.time()
+            self._refresh_dashboard()
+            QApplication.processEvents()
 
         # Check always-allow rules before showing the dialog
         scopes = self._perm_always_allow.get(tool_name, set())

@@ -311,6 +311,13 @@ class AgentChatPanel(QWidget):
         fp = self._font_pt
         ts_ss = (f"color:{_MUTED};font-size:{max(8, fp - 3)}px;"
                  f"font-family:{ff};margin-top:1px;")
+        # Skip render if nothing meaningful changed — prevents 4 Hz repaint flicker.
+        sig = (fp, tuple(
+            (m.get("role"), m.get("text"), bool(m.get("streaming")))
+            for m in messages))
+        if sig == getattr(self, "_last_render_sig", None):
+            return
+        self._last_render_sig = sig
         parts = [f'<div style="font-family:{ff};font-size:{fp}px;padding:4px 6px;">']
         for m in messages:
             role = m.get("role", "")
@@ -674,6 +681,10 @@ class AgentTable(QWidget):
     def _repopulate(self):
         sessions = self._filtered()
         rows = self._grouped_rows(sessions)
+        # Preserve selection by tid across the destroy/rebuild cycle so the
+        # highlight doesn't appear to wander between rows on every refresh.
+        sel_tid = self._selected_tid
+        self._tbl.blockSignals(True)
         self._tbl.setSortingEnabled(False)
         self._tbl.setRowCount(len(rows))
         for row, item in enumerate(rows):
@@ -771,6 +782,13 @@ class AgentTable(QWidget):
                     item.setBackground(QBrush(bg))
         # Re-enable header click-sort only when there are no group rows to scramble.
         self._tbl.setSortingEnabled(self._group_by == "none")
+        # Restore the previously-selected agent's row.
+        if sel_tid >= 0:
+            for _r in range(self._tbl.rowCount()):
+                if self._tid_at_row(_r) == sel_tid:
+                    self._tbl.selectRow(_r)
+                    break
+        self._tbl.blockSignals(False)
 
     def _tid_at_row(self, row: int) -> int:
         item = self._tbl.item(row, _COL_DOT)
@@ -907,11 +925,15 @@ class AgentTable(QWidget):
                                  "ts": time.time()})
                     changed_tids.add(tid)
 
-            # Fallback: legacy box-scraping path for non-stream-json runs
+            # Fallback: legacy box-scraping path — only for agents that have
+            # never had stream-json activity. Once stream events have fired for
+            # this tid the stream path is the source of truth and dual-tracking
+            # would produce duplicate bubbles with slightly different text.
+            had_stream = self._agent_last_stream_seq.get(tid, 0) > 0
             last_waiting_at   = s.get("last_waiting_at", 0.0)
             last_agent_output = s.get("last_agent_output", "")
             prev_waiting      = self._agent_last_waiting_at.get(tid, 0.0)
-            if last_waiting_at > prev_waiting and last_waiting_at > 0:
+            if not had_stream and last_waiting_at > prev_waiting and last_waiting_at > 0:
                 self._agent_last_waiting_at[tid] = last_waiting_at
                 conv = self._conversations.setdefault(tid, [])
                 last = conv[-1] if conv else None
