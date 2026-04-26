@@ -5016,10 +5016,15 @@ class AIDEWindow(QMainWindow):
         s.validation_note    = note
 
     def _run_agent_task(self, tid: int, task: str):
-        """Run claude one-shot (-p) in session tid for *task*, then it exits."""
+        """Run claude non-interactively (-p) for *task* in session tid.
+
+        Uses --continue to resume the most recent session for the working
+        directory so context is preserved across successive task dispatches.
+        Claude exits after the task completes, freeing memory.
+        """
         s = self.sessions.get(tid)
         if not s or not s.alive: return
-        d   = (s.autostart_dir or "").strip()
+        d    = (s.autostart_dir or "").strip()
         args = f" {s.claude_args}" if s.claude_args else ""
         payload = b""
         gh_exports = self._gh_token_exports(s)
@@ -5028,7 +5033,8 @@ class AIDEWindow(QMainWindow):
         if d:
             payload += f"cd {shlex.quote(d)}\n".encode("utf-8")
         safe_task = task.replace("'", "'\\''")
-        payload += f"claude -p '{safe_task}'{args}\n".encode("utf-8")
+        # --continue resumes the most-recent session for this dir (preserves context)
+        payload += f"claude --continue -p '{safe_task}'{args}\n".encode("utf-8")
         def _write(t=tid, p=payload):
             sess = self.sessions.get(t)
             if sess: sess.write(p)

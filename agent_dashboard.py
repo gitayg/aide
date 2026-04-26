@@ -153,7 +153,7 @@ class _ChatBar(QWidget):
             f"color:{_ACCENT};font-size:12px;font-weight:bold;min-width:120px;")
         lay.addWidget(lbl)
         self._inp = QLineEdit()
-        self._inp.setPlaceholderText("Type a message and press Enter…")
+        self._inp.setPlaceholderText("Type a task and press Enter — claude runs once and exits…")
         self._inp.setStyleSheet(_SEARCH_SS)
         self._inp.returnPressed.connect(self._send)
         lay.addWidget(self._inp, 1)
@@ -483,7 +483,7 @@ class AgentTable(QWidget):
         lay = QVBoxLayout(self._chat_container)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.addWidget(bar)
-        bar.message_sent.connect(lambda msg, t=tid: self.send_message.emit(t, msg + "\n"))
+        bar.message_sent.connect(lambda msg, t=tid: self.run_task.emit(t, msg))
         bar.closed.connect(lambda: self._open_chat(tid, name))
         self._chat_bar = bar
         self._chat_container.setVisible(True)
