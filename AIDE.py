@@ -117,7 +117,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "4.9.0"
+VERSION      = "4.9.1"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -503,6 +503,9 @@ class NeuralRailOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "4.9.1": [
+        ("🩹", "Startup crash fix", "Added missing QTextEdit to agent_dashboard.py imports — _ChatInput(QTextEdit) raised NameError at import time and crashed AIDE on launch. py_compile didn't catch it (only checks syntax, not name resolution)."),
+    ],
     "4.9.0": [
         ("🛡️", "MCP server registration fixed (root cause of stuck streams)", "Claude Code stopped honoring `mcpServers` in ~/.claude/settings.json. AIDE now uses `claude mcp add --transport sse --scope user aide <url>` on every startup, which writes to ~/.claude.json in the format the runtime actually reads. Without this, Edit/Bash from -p tasks failed with 'MCP tool mcp__aide__permission_prompt not found' and the stream watchdog fired after 120 s. Found by inspecting app.log."),
         ("🟢", "MCP status indicator in toolbar", "Bottom toolbar now shows ● MCP :port (green) when registered, ○ MCP (red) when not. Hover for the URL and recovery hint. Refreshed every 10 s."),

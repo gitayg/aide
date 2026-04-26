@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QLineEdit,
     QDialog, QPlainTextEdit, QDialogButtonBox, QApplication,
-    QSplitter, QTextBrowser, QScrollBar,
+    QSplitter, QTextBrowser, QScrollBar, QTextEdit,
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QBrush
