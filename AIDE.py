@@ -117,7 +117,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "4.8.3"
+VERSION      = "4.8.4"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -503,6 +503,10 @@ class NeuralRailOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "4.8.4": [
+        ("📌", "Status removed from default sort key", "Default sort is now (validation, tid). Including status in the key meant any working↔thinking↔idle flip rewrote the row order, changed the structure signature, forced a full repopulate, and flashed the highlight. Status grouping is still available via the explicit Group: Status toggle."),
+        ("●", "Status dot color now updates live", "_update_in_place sets ForegroundRole explicitly, retouches the text, and forces a viewport repaint so the colored dot reflects the current status without waiting for a full table rebuild."),
+    ],
     "4.8.3": [
         ("🪡", "In-place table updates — no more wandering highlight", "Dashboard refresh now diffs the agent set: when the structure (tids + group order) is unchanged, items update text/tooltip/colors in place instead of being destroyed and recreated. Selection focus stays exactly where you clicked it. Action-button widgets are only recreated when the agent's status actually changes."),
     ],

@@ -669,13 +669,13 @@ class AgentTable(QWidget):
                 if self._search not in name and self._search not in tags:
                     continue
             result.append(s)
-        order = {st: i for i, st in enumerate(_STATUS_ORDER)}
-        # Tie-break on tid (stable) — using last_active was making rows shuffle
-        # every refresh because streaming agents bump it constantly, which felt
-        # like the row highlight was wandering on its own.
+        # Stable order: validation-pending agents pinned to the top, then by tid.
+        # Status is NOT in the sort key — including it caused rows to swap each
+        # time an agent flipped between working/thinking/idle, which changed the
+        # structure signature and forced a full repopulate (and a highlight flash).
+        # Status grouping is still available via the explicit "Group: Status" toggle.
         result.sort(key=lambda s: (
             0 if s.get("pending_validation") else 1,
-            order.get(s.get("status", "idle"), 99),
             s.get("tid", 0),
         ))
         return result
@@ -844,7 +844,11 @@ class AgentTable(QWidget):
             # Dot — color, sort key, tooltip
             dot = self._tbl.item(row, _COL_DOT)
             if dot:
-                dot.setForeground(QBrush(QColor(color)))
+                # Use setData(ForegroundRole) explicitly + nudge text to force
+                # Qt to repaint the cell — bare setForeground sometimes leaves
+                # the previously-cached pixmap on screen.
+                dot.setData(Qt.ItemDataRole.ForegroundRole, QBrush(QColor(color)))
+                dot.setText("●")
                 dot.setData(_SORT_ROLE, _STATUS_SORT.get(status, 99))
                 _dot_tip = label
                 if task_result:
@@ -928,6 +932,10 @@ class AgentTable(QWidget):
                 cell = self._tbl.item(row, col)
                 if cell:
                     cell.setBackground(QBrush(bg))
+        # Force the table viewport to repaint so foreground/background changes
+        # land immediately — model dataChanged signals don't always invalidate
+        # the cached cell pixmap when only ForegroundRole changes.
+        self._tbl.viewport().update()
 
     def _tid_at_row(self, row: int) -> int:
         item = self._tbl.item(row, _COL_DOT)
