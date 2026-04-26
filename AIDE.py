@@ -1642,6 +1642,16 @@ class TermSession:
         s.info.cwd=_shorten_path(stored_cwd) if stored_cwd else "~"
         s.info.ssh_host=d.get("ssh_host",""); s.info.last_cmd=d.get("last_cmd","")
         s._neural_profile = d.get("neural", None)  # restored in MainWindow after bus starts
+        # ── v4 migration: extract resume token and working dir from autostart_cmd ──
+        cmd = s.autostart_cmd or ""
+        if not s.claude_resume_cmd:
+            if m := re.search(r"--resume\s+([a-zA-Z0-9_-]+)", cmd):
+                s.claude_resume_cmd = f"claude --resume {m.group(1)}"
+        if not s.autostart_dir:
+            if m := re.match(r"(?:cd\s+)?([~/][^\s;&|]+)(?:\s*[;&|]|$)", cmd):
+                candidate = m.group(1).strip()
+                if candidate.startswith(("~", "/")):
+                    s.autostart_dir = candidate
         return s
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -4974,8 +4984,8 @@ class AIDEWindow(QMainWindow):
             "status":             status,
             "last_active":        s.last_out_time,
             "tags":               list(s.tags),
-            "dir":                s.autostart_dir or s.info.cwd or "",
-            "cmd":                s.autostart_cmd or "",
+            "dir":                s.autostart_dir or s.info.cwd_full or s.info.cwd or "",
+            "cmd":                s.claude_resume_cmd or s.autostart_cmd or "",
             "profile":            s.claude_profile or "",
             "pending_validation": s.pending_validation,
             "validation_note":    s.validation_note,
@@ -5033,8 +5043,9 @@ class AIDEWindow(QMainWindow):
         if d:
             payload += f"cd {shlex.quote(d)}\n".encode("utf-8")
         safe_task = task.replace("'", "'\\''")
-        # --continue resumes the most-recent session for this dir (preserves context)
-        payload += f"claude --continue -p '{safe_task}'{args}\n".encode("utf-8")
+        # prefer explicit --resume <id> if known; fall back to --continue
+        resume_base = s.claude_resume_cmd or "claude --continue"
+        payload += f"{resume_base} -p '{safe_task}'{args}\n".encode("utf-8")
         def _write(t=tid, p=payload):
             sess = self.sessions.get(t)
             if sess: sess.write(p)
