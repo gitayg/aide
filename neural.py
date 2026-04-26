@@ -52,6 +52,16 @@ class NeuralMessage:
 class _ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
 
+    def handle_error(self, request, client_address):
+        """Suppress noisy BrokenPipe/ConnectionReset tracebacks — these fire
+        whenever claude disconnects from an SSE stream abruptly (task end,
+        tab close, etc.) and don't indicate a real problem."""
+        import sys, traceback
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)):
+            return
+        traceback.print_exc()
+
 
 # ── Bus ──────────────────────────────────────────────────────────────────────
 

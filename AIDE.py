@@ -117,7 +117,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "4.8.5"
+VERSION      = "4.8.6"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -503,6 +503,15 @@ class NeuralRailOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "4.8.6": [
+        ("●", "Status dot replaced (not mutated) on color change", "_update_in_place compares the current dot foreground; if it differs, the item is fully replaced. Mutating ForegroundRole left Qt's cached cell pixmap stale, so the dot color was frozen until a structural rebuild."),
+        ("📐", "Action buttons only recreated on shape change", "Button cell widget was being torn down/rebuilt on every working↔thinking flip (~once per second), which flashed a new widget into the row. Now we only swap when the button SET changes (Answer ↔ Review)."),
+        ("🔢", "Token counter on agent bubbles", "Every user task snapshots `tokens_used` at dispatch; the matching agent bubble shows the running delta in the corner (e.g. `1,234 tok`). Updates live during streaming."),
+        ("🧹", "setSpan log spam fixed", "_repopulate now calls clearSpans() once instead of issuing a 1x1 setSpan to undo group spans on data rows — Qt rejected those with a warning that flooded ~/.aide/app.log (35 MB+ of noise)."),
+        ("🪵", "Stream-watchdog now logs", "When the 120 s no-events watchdog fires, the tab id, resume command, working dir, and last 12 lines of clean PTY tail are appended to ~/.aide/app.log AND surfaced in the error bubble — so you can see what claude was doing right before the silence."),
+        ("🔇", "afplay device flag removed", "macOS `afplay` has no -a/-d/--device flag; passing one made every notification print 'sound failed: unknown argument: -a'. Device override is now skipped on macOS (paplay/aplay still honored on Linux)."),
+        ("🌊", "Quieter MCP server", "_ThreadedHTTPServer.handle_error swallows BrokenPipeError, ConnectionResetError, and ConnectionAbortedError — claude disconnects from an SSE stream abruptly at every task end, which used to dump a full traceback into ~/.aide/app.log."),
+    ],
     "4.8.5": [
         ("⏹", "Stream finalize — no more stuck bubbles", "Three guards against streams that don't return: (1) chat panel always re-syncs the selected agent each refresh (HTML cache prevents repaint cost); (2) when stream_active flips to False, any leftover bubble flagged 'streaming' is finalized; (3) a 120 s no-events watchdog in _check_idle force-finalizes orphaned streams with a clear task_result."),
     ],
@@ -1143,11 +1152,11 @@ def play_sound(cfg:NotifConfig):
         vol_int = min(131072, int(volume * 65536))
         parts.insert(1, f"--volume={vol_int}")
 
-    # Apply device
+    # Apply device — afplay has no device selector flag, so skip it for macOS.
     if cfg.sound_device:
-        if   "afplay" in prog: parts += ["-a", cfg.sound_device]
-        elif "paplay" in prog: parts += ["--device", cfg.sound_device]
+        if   "paplay" in prog: parts += ["--device", cfg.sound_device]
         elif "aplay"  in prog: parts += ["-D", cfg.sound_device]
+        # afplay: no flag exists, ignore the configured device on macOS
 
     # Loop for the requested duration
     end = time.time() + duration
@@ -6253,14 +6262,42 @@ class AIDEWindow(QMainWindow):
                 # JSON line lost). Finalize so the UI doesn't show a stuck
                 # "streaming…" bubble forever.
                 if s._ai_active_time and (now - s._ai_active_time) > 120:
+                    silence = int(now - s._ai_active_time)
                     s.stream_active = False
                     s.stream_seq += 1
                     s.claude_working = False
                     s.claude_thinking = False
                     s.waiting_input = True
                     s.last_waiting_at = now
-                    s.task_result = ("[stream-watchdog] No stream events for "
-                                     ">120 s — finalized. Check terminal for actual state.")
+                    # Capture the tail of the PTY so the user can see what
+                    # claude was doing right before the silence.
+                    try:
+                        tail_clean = _ANSI_RE.sub('', s._output_tail)
+                        last_lines = "\n".join(
+                            l for l in tail_clean.splitlines()[-12:] if l.strip())
+                    except Exception:
+                        last_lines = ""
+                    s.task_result = (
+                        f"[stream-watchdog] {silence}s of silence — finalized.\n"
+                        f"Common causes:\n"
+                        f"• MCP permission popup not answered (check tray)\n"
+                        f"• Long single tool call (file scan, large diff)\n"
+                        f"• claude crashed or PTY broke\n"
+                        f"• Lost JSON event line\n\n"
+                        f"Last terminal lines:\n{last_lines or '(none)'}")
+                    # Append to ~/.aide/app.log for offline debugging.
+                    try:
+                        log_path = CONFIG_DIR / "app.log"
+                        with log_path.open("a") as _lf:
+                            _lf.write(
+                                f"[stream-watchdog] tab={s.tab_id} "
+                                f"silence={silence}s "
+                                f"resume={s.claude_resume_cmd or '(none)'} "
+                                f"dir={s.autostart_dir or '(none)'}\n"
+                                f"--- last output ---\n{last_lines}\n"
+                                f"--- end ---\n")
+                    except Exception:
+                        pass
                     needs_refresh = True
                 continue
             if (s.claude_working or s.claude_thinking) and s._ai_active_time>0:

@@ -303,7 +303,7 @@ class AgentChatPanel(QWidget):
                  f"font-family:{ff};margin-top:1px;")
         # Skip render if nothing meaningful changed — prevents 4 Hz repaint flicker.
         sig = (fp, tuple(
-            (m.get("role"), m.get("text"), bool(m.get("streaming")))
+            (m.get("role"), m.get("text"), bool(m.get("streaming")), m.get("tokens", 0))
             for m in messages))
         if sig == getattr(self, "_last_render_sig", None):
             return
@@ -322,6 +322,9 @@ class AgentChatPanel(QWidget):
                     f'<div style="text-align:right;{ts_ss}">{tstr}</div></div>')
             elif role == "agent":
                 streaming = m.get("streaming")
+                tokens = m.get("tokens", 0)
+                tok_html = (f' <span style="color:{_ACCENT};">·</span> '
+                            f'<span style="color:{_ACCENT};">{tokens:,} tok</span>') if tokens else ""
                 if streaming:
                     cursor = (f' <span style="color:{_GREEN};background:{_GREEN}55;'
                               f'padding:0 3px;font-weight:bold;">▍</span>')
@@ -331,18 +334,20 @@ class AgentChatPanel(QWidget):
                         f"padding:6px 11px;border-radius:8px;"
                         f"display:inline-block;max-width:88%;")
                     label_html = (f'<span style="color:{_GREEN};font-weight:bold;">'
-                                  f'⚡ streaming</span>')
+                                  f'⚡ streaming</span>{tok_html}')
                 else:
                     cursor = ""
                     bubble_style = (f"background:{_SURFACE};color:{_FG};"
                                     f"padding:5px 10px;border-radius:8px;"
                                     f"display:inline-block;max-width:88%;")
-                    label_html = tstr
+                    label_html = f"{tstr}{tok_html}"
                 parts.append(
                     f'<div style="text-align:left;margin:5px 0;">'
                     f'<span style="{bubble_style}">{text}{cursor}</span>'
                     f'<div style="text-align:left;{ts_ss}">{label_html}</div></div>')
             elif role == "error":
+                tokens = m.get("tokens", 0)
+                tok_html = (f' <span style="color:{_MUTED};">· {tokens:,} tok</span>') if tokens else ""
                 parts.append(
                     f'<div style="text-align:left;margin:5px 0;">'
                     f'<div style="background:{_RED}22;color:{_FG};'
@@ -351,7 +356,7 @@ class AgentChatPanel(QWidget):
                     f'white-space:pre-wrap;">'
                     f'<span style="color:{_RED};font-weight:bold;">⚠ Error</span><br>{text}'
                     f'</div>'
-                    f'<div style="text-align:left;{ts_ss}">{tstr}</div></div>')
+                    f'<div style="text-align:left;{ts_ss}">{tstr}{tok_html}</div></div>')
             elif role == "queued":
                 parts.append(
                     f'<div style="text-align:right;margin:5px 0;">'
@@ -701,6 +706,9 @@ class AgentTable(QWidget):
         sel_tid = self._selected_tid
         self._tbl.blockSignals(True)
         self._tbl.setSortingEnabled(False)
+        # Clear all spans up front so we don't have to undo per-row (Qt rejects
+        # 1x1 spans with a warning, which used to flood ~/.aide/app.log).
+        self._tbl.clearSpans()
         self._tbl.setRowCount(len(rows))
         # Per-row status snapshot — used by the in-place updater to tell
         # whether the action buttons need recreating.
@@ -720,9 +728,6 @@ class AgentTable(QWidget):
                 # Clear any cell widget from a previous repopulate
                 self._tbl.removeCellWidget(row, _COL_ACTIONS)
                 continue
-            else:
-                # In case the previous render left a span on this row, undo it.
-                self._tbl.setSpan(row, 0, 1, 1)
             s = item
             tid         = s.get("tid", -1)
             task_result = s.get("task_result", "")
@@ -809,7 +814,8 @@ class AgentTable(QWidget):
                 item = self._tbl.item(row, col)
                 if item:
                     item.setBackground(QBrush(bg))
-            self._row_status[row] = status
+            # Track button SHAPE — what the in-place updater compares against.
+            self._row_status[row] = "answer" if status == "waiting" else "review"
         # Re-enable header click-sort only when there are no group rows to scramble.
         self._tbl.setSortingEnabled(self._group_by == "none")
         # Restore the previously-selected agent's row.
@@ -841,15 +847,21 @@ class AgentTable(QWidget):
             color  = _STATUS_COLOR.get(status, _MUTED)
             label  = _STATUS_LABEL.get(status, status.capitalize())
 
-            # Dot — color, sort key, tooltip
-            dot = self._tbl.item(row, _COL_DOT)
-            if dot:
-                # Use setData(ForegroundRole) explicitly + nudge text to force
-                # Qt to repaint the cell — bare setForeground sometimes leaves
-                # the previously-cached pixmap on screen.
-                dot.setData(Qt.ItemDataRole.ForegroundRole, QBrush(QColor(color)))
-                dot.setText("●")
-                dot.setData(_SORT_ROLE, _STATUS_SORT.get(status, 99))
+            # Dot — REPLACE the item entirely on color change. Mutating
+            # Foreground in place leaves Qt's cached cell pixmap stale, so the
+            # color appears frozen. Only one cell, no selection impact.
+            cur_dot = self._tbl.item(row, _COL_DOT)
+            cur_color_hex = ""
+            if cur_dot:
+                _b = cur_dot.foreground()
+                if _b is not None:
+                    cur_color_hex = _b.color().name()
+            if cur_color_hex.lower() != color.lower():
+                new_dot = _SortableItem("●")
+                new_dot.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                new_dot.setForeground(QBrush(QColor(color)))
+                new_dot.setData(Qt.ItemDataRole.UserRole, tid)
+                new_dot.setData(_SORT_ROLE, _STATUS_SORT.get(status, 99))
                 _dot_tip = label
                 if task_result:
                     _dot_tip += f"\n\n{task_result}"
@@ -857,7 +869,19 @@ class AgentTable(QWidget):
                     _vn = s.get("validation_note", "")
                     if _vn:
                         _dot_tip += f"\n\n{_vn}"
-                dot.setToolTip(_dot_tip)
+                new_dot.setToolTip(_dot_tip)
+                self._tbl.setItem(row, _COL_DOT, new_dot)
+            elif cur_dot:
+                # Same color — just refresh the tooltip / sort key
+                cur_dot.setData(_SORT_ROLE, _STATUS_SORT.get(status, 99))
+                _dot_tip = label
+                if task_result:
+                    _dot_tip += f"\n\n{task_result}"
+                elif s.get("pending_validation"):
+                    _vn = s.get("validation_note", "")
+                    if _vn:
+                        _dot_tip += f"\n\n{_vn}"
+                cur_dot.setToolTip(_dot_tip)
 
             # Name — neural prefix + queue badge
             neural = s.get("neural_on_bus", False)
@@ -912,14 +936,20 @@ class AgentTable(QWidget):
             acct_item = self._tbl.item(row, _COL_ACCT)
             if acct_item: acct_item.setText(s.get("profile", "") or "default")
 
-            # Action buttons — only recreate if status actually changed (would
-            # otherwise eat clicks and flash the highlight).
-            if row < len(self._row_status) and self._row_status[row] != status:
+            # Action buttons — only recreate when the button SHAPE changes.
+            # status flips between working/thinking every ~second during a
+            # stream; recreating the cell widget on every flip flashes a new
+            # button widget into the row and looks like the highlight is
+            # wandering. The shape only changes when waiting toggles.
+            new_shape = "answer" if status == "waiting" else "review"
+            cur_shape = self._row_status[row] if row < len(self._row_status) else None
+            if cur_shape != new_shape:
                 self._tbl.setCellWidget(row, _COL_ACTIONS,
                                         self._make_action_btns(tid, status, s.get("name", f"Agent {tid}")))
-                self._row_status[row] = status
+                self._row_status[row] = new_shape
 
-            # Row background tint by status
+            # Row background tint by status — only set when the bg actually
+            # changes, so we don't trigger spurious repaints every tick.
             if status in ("validate", "task_error"):
                 bg = QColor(_RED + "22")
             elif status == "waiting":
@@ -928,14 +958,13 @@ class AgentTable(QWidget):
                 bg = QColor(_GREEN + "12")
             else:
                 bg = QColor(_BG)
-            for col in range(_N_COLS):
-                cell = self._tbl.item(row, col)
-                if cell:
-                    cell.setBackground(QBrush(bg))
-        # Force the table viewport to repaint so foreground/background changes
-        # land immediately — model dataChanged signals don't always invalidate
-        # the cached cell pixmap when only ForegroundRole changes.
-        self._tbl.viewport().update()
+            cur_cell = self._tbl.item(row, _COL_NAME)
+            cur_bg = cur_cell.background().color() if cur_cell else None
+            if cur_bg is None or cur_bg.name() != bg.name():
+                for col in range(_N_COLS):
+                    cell = self._tbl.item(row, col)
+                    if cell:
+                        cell.setBackground(QBrush(bg))
 
     def _tid_at_row(self, row: int) -> int:
         item = self._tbl.item(row, _COL_DOT)
@@ -1053,26 +1082,38 @@ class AgentTable(QWidget):
                 conv = self._conversations.setdefault(tid, [])
                 last = conv[-1] if conv else None
                 now = time.time()
+                # Compute tokens spent on the in-progress task — diff between
+                # current tokens_used and the baseline snapped at user dispatch.
+                cur_tokens = s.get("tokens_used", 0)
+                tokens_for_task = 0
+                for _prev in reversed(conv):
+                    if _prev.get("role") == "user" and _prev.get("tokens_baseline") is not None:
+                        tokens_for_task = max(0, cur_tokens - _prev["tokens_baseline"])
+                        break
+
                 if stream_active:
                     if last and last.get("role") == "agent" and last.get("streaming"):
                         last["text"] = stream_text
+                        last["tokens"] = tokens_for_task
                     else:
                         conv.append({"role": "agent", "text": stream_text,
-                                     "streaming": True, "ts": now})
+                                     "streaming": True, "ts": now,
+                                     "tokens": tokens_for_task})
                 elif task_result:
-                    # Stream finished with an error — replace any in-flight
-                    # streaming bubble with a detailed error message.
                     if last and last.get("role") == "agent" and last.get("streaming"):
                         conv.pop()
-                    conv.append({"role": "error", "text": task_result, "ts": now})
+                    conv.append({"role": "error", "text": task_result, "ts": now,
+                                 "tokens": tokens_for_task})
                 else:
                     if last and last.get("role") == "agent" and last.get("streaming"):
                         last["text"] = stream_text or last.get("text", "")
                         last["streaming"] = False
                         last["ts"] = now
+                        last["tokens"] = tokens_for_task
                     elif stream_text:
                         conv.append({"role": "agent", "text": stream_text,
-                                     "streaming": False, "ts": now})
+                                     "streaming": False, "ts": now,
+                                     "tokens": tokens_for_task})
 
             # Dispatch-time errors (e.g. agent not running) — task_result set
             # without a stream. Add as error bubble once per change.
@@ -1133,8 +1174,13 @@ class AgentTable(QWidget):
             {"role": role, "text": text, "ts": time.time()})
 
     def _on_panel_task(self, tid: int, text: str):
-        self._add_message(tid, "user", text)
         s = next((x for x in self._sessions if x.get("tid") == tid), None)
+        baseline = s.get("tokens_used", 0) if s else 0
+        # Snapshot tokens_used at dispatch — the matching agent bubble computes
+        # its token cost as (current_tokens - baseline_at_user_dispatch).
+        conv = self._conversations.setdefault(tid, [])
+        conv.append({"role": "user", "text": text, "ts": time.time(),
+                     "tokens_baseline": baseline})
         busy = bool(s and (s.get("stream_active") or
                            s.get("status") in ("working", "thinking")))
         if busy:
@@ -1146,8 +1192,7 @@ class AgentTable(QWidget):
         if s and self._selected_tid == tid:
             self._chat_panel.set_queued_count(len(self._task_queue.get(tid, [])))
             self._chat_panel.set_agent(
-                tid, s.get("name", f"Agent {tid}"),
-                "working" if busy else "working",
+                tid, s.get("name", f"Agent {tid}"), "working",
                 self._conversations.get(tid, []))
 
     # ── Dialogs ────────────────────────────────────────────────────────────────
