@@ -205,15 +205,6 @@ class AgentChatPanel(QWidget):
         self._status_lbl.setStyleSheet(f"color:{_MUTED};font-size:11px;")
         hl.addWidget(self._title_lbl, 1)
         hl.addWidget(self._status_lbl)
-        _font_btn_ss = (f"QPushButton{{background:{_SURFACE};color:{_FG};border:none;"
-                        f"border-radius:3px;font-size:10px;padding:0 4px;}}"
-                        f"QPushButton:hover{{background:{_ACCENT}33;color:{_ACCENT};}}")
-        for _label, _fn in [("A−", self._dec_font), ("A+", self._inc_font)]:
-            _b = QPushButton(_label)
-            _b.setFixedSize(24, 22)
-            _b.setStyleSheet(_font_btn_ss)
-            _b.clicked.connect(_fn)
-            hl.addWidget(_b)
         lay.addWidget(hdr)
 
         # ── conversation log ──────────────────────────────────────────────────
@@ -295,15 +286,14 @@ class AgentChatPanel(QWidget):
             return ""
         return time.strftime("%H:%M:%S", time.localtime(ts))
 
-    def _inc_font(self):
-        if self._font_pt < 22:
-            self._font_pt += 1
-            self._render(self._last_messages)
-
-    def _dec_font(self):
-        if self._font_pt > 8:
-            self._font_pt -= 1
-            self._render(self._last_messages)
+    def set_font_size(self, pt: int):
+        """Set the chat panel font size (clamped 8-32). Driven by the ribbon's A−/A+."""
+        new_pt = max(8, min(32, int(pt)))
+        if new_pt == self._font_pt:
+            return
+        self._font_pt = new_pt
+        self._last_render_sig = None  # invalidate cached HTML
+        self._render(self._last_messages)
 
     def _render(self, messages: list):
         self._last_messages = messages
@@ -376,9 +366,14 @@ class AgentChatPanel(QWidget):
                     f'color:{_MUTED};font-size:10px;">{text}'
                     f' <span style="color:{_MUTED};">· {tstr}</span></div>')
         parts.append('</div>')
-        self._log.setHtml("".join(parts))
         sb = self._log.verticalScrollBar()
-        sb.setValue(sb.maximum())
+        # Only auto-scroll to the bottom if the user was already at the bottom.
+        # Otherwise leave their scroll position alone so the wheel actually works
+        # for reading older messages without getting yanked back down.
+        was_at_bottom = sb.value() >= sb.maximum() - 8
+        self._log.setHtml("".join(parts))
+        if was_at_bottom:
+            sb.setValue(sb.maximum())
 
     def _send(self):
         text = self._inp.text().strip()
@@ -498,6 +493,8 @@ class AgentTable(QWidget):
         h = self._tbl.horizontalHeader()
         for _c in range(_N_COLS):
             h.setSectionResizeMode(_c, QHeaderView.ResizeMode.Interactive)
+        # Status column is folded into the colored dot's tooltip — hide it.
+        self._tbl.setColumnHidden(_COL_STATUS, True)
         self._tbl.setColumnWidth(_COL_DOT,     28)
         self._tbl.setColumnWidth(_COL_NAME,    150)
         self._tbl.setColumnWidth(_COL_STATUS,  110)
@@ -671,10 +668,13 @@ class AgentTable(QWidget):
                     continue
             result.append(s)
         order = {st: i for i, st in enumerate(_STATUS_ORDER)}
+        # Tie-break on tid (stable) — using last_active was making rows shuffle
+        # every refresh because streaming agents bump it constantly, which felt
+        # like the row highlight was wandering on its own.
         result.sort(key=lambda s: (
             0 if s.get("pending_validation") else 1,
             order.get(s.get("status", "idle"), 99),
-            -(s.get("last_active", 0)),
+            s.get("tid", 0),
         ))
         return result
 
@@ -731,6 +731,15 @@ class AgentTable(QWidget):
             dot.setForeground(QBrush(QColor(color)))
             dot.setData(Qt.ItemDataRole.UserRole, tid)
             dot.setData(_SORT_ROLE, _STATUS_SORT.get(status, 99))
+            # Status text + (optional) error/validation note as the dot's tooltip
+            _dot_tip = label
+            if task_result:
+                _dot_tip += f"\n\n{task_result}"
+            elif s.get("pending_validation"):
+                _vn = s.get("validation_note", "")
+                if _vn:
+                    _dot_tip += f"\n\n{_vn}"
+            dot.setToolTip(_dot_tip)
             raw_model = s.get("model", "") or ""
             model_short = raw_model.split("-")[1] if raw_model and "-" in raw_model else (raw_model or "default")
             tokens = s.get("tokens_used", 0)
@@ -743,11 +752,13 @@ class AgentTable(QWidget):
             neural = s.get("neural_on_bus", False)
             qcount = len(self._task_queue.get(tid, []))
             badge  = f"  ⏳{qcount}" if qcount else ""
-            name_str = ("⬡ " if neural else "") + s.get("name", f"Agent {tid}") + badge
+            # Brain + dashed arrow = "this agent is wired into the Neural Brain"
+            neural_pfx = "🧠⇢ " if neural else ""
+            name_str = neural_pfx + s.get("name", f"Agent {tid}") + badge
             name_item = _item(name_str)
             tooltip_parts = []
             if neural:
-                tooltip_parts.append("Connected to Neural Brain")
+                tooltip_parts.append("🧠 Connected to Neural Brain")
             if qcount:
                 tooltip_parts.append(f"{qcount} task(s) queued")
             if tooltip_parts:

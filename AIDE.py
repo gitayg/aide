@@ -117,7 +117,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "4.8.1"
+VERSION      = "4.8.2"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -259,11 +259,37 @@ def _blop_sound():
 
 
 def _macos_notify(title: str, msg: str):
-    """Post a macOS Notification Center alert via osascript."""
+    """Post a macOS Notification Center alert.
+
+    Uses PyObjC's NSUserNotification so the notification is attributed to AIDE
+    (and clicking it brings AIDE forward) instead of `osascript` (which would
+    take the user to Script Editor / Apple Scripting). Falls back to osascript
+    only if PyObjC isn't available."""
+    safe_title = title[:120]
+    safe_msg   = msg[:240]
     try:
-        safe_title = title.replace('"', "'")[:120]
-        safe_msg   = msg.replace('"', "'")[:240]
-        script = f'display notification "{safe_msg}" with title "AIDE" subtitle "{safe_title}"'
+        from Foundation import NSUserNotification, NSUserNotificationCenter
+        notif = NSUserNotification.alloc().init()
+        notif.setTitle_("AIDE")
+        notif.setSubtitle_(safe_title)
+        notif.setInformativeText_(safe_msg)
+        # Tag with our bundle id so the click activates AIDE.
+        try:
+            from AppKit import NSBundle
+            bid = NSBundle.mainBundle().bundleIdentifier()
+            if not bid:
+                NSBundle.mainBundle().infoDictionary()["CFBundleIdentifier"] = "com.itayglick.aide"
+        except Exception:
+            pass
+        NSUserNotificationCenter.defaultUserNotificationCenter().deliverNotification_(notif)
+        return
+    except Exception:
+        pass
+    # Fallback: osascript (clicking will route to Script Editor — not ideal)
+    try:
+        safe_title_q = safe_title.replace('"', "'")
+        safe_msg_q   = safe_msg.replace('"', "'")
+        script = f'display notification "{safe_msg_q}" with title "AIDE" subtitle "{safe_title_q}"'
         subprocess.Popen(["osascript", "-e", script],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
@@ -477,6 +503,18 @@ class NeuralRailOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "4.8.2": [
+        ("📌", "Stable row order in dashboard", "Tie-break in the table sort changed from `last_active` to `tid`. Streaming agents bumped `last_active` constantly which made rows shuffle every refresh — the highlight appeared to wander on its own."),
+        ("●", "Status column folded into the dot tooltip", "The Status column is hidden; the colored dot's tooltip now shows the status label and any error / validation note. Reclaims horizontal space."),
+        ("💬", "Idle-fallback waits also surface output in chat", "_check_idle now captures the last 40 lines of clean terminal output into last_agent_output when the 3-second idle timer flips an agent to waiting — chat panel shows what claude said instead of an empty bubble."),
+        ("🅰", "Single A−/A+ control on the ribbon", "Removed the duplicate A−/A+ buttons from the chat panel header. The ribbon's A−/A+ now drives both terminal AND chat panel font sizes."),
+        ("🧠", "Brain icon for neural-connected agents", "Replaces the ⬡ hexagon with 🧠⇢ — clearer that the agent is wired into the Neural Brain."),
+        ("🔔", "Notifications open AIDE on click", "macOS notifications now use NSUserNotification with AIDE's bundle identifier instead of `osascript display notification`. Clicking a notification brings AIDE forward instead of Script Editor."),
+        ("⏱", "Idle fallback skips active streams", "_check_idle no longer flips streaming agents to 'Pending Answer' after 3 s of silence — long tool calls between assistant text chunks routinely exceed 3 s. Stream status is now driven entirely by result events. user (tool_result) events also bump _ai_active_time."),
+        ("🖱", "Wheel-scroll works in the chat panel", "Auto-scroll-to-bottom now only fires if you were already at the bottom — scrolling up to read older messages no longer gets yanked back down on the next refresh."),
+        ("🔧", "Tool calls inline in the chat panel", "Stream-json `assistant` events with `tool_use` content now surface as 🔧 tool(arg) lines in the streaming bubble, so you see what claude is doing during tool-heavy phases instead of an empty bubble."),
+        ("🔢", "Live token counter during stream", "Token count updates incrementally from `assistant.message.usage` rather than only at the result event — you see the running tally while the agent works."),
+    ],
     "4.8.1": [
         ("✋", "Chat panel no longer flickers", "AgentChatPanel._render now compares a content signature against the last render and skips setHtml when nothing changed — eliminates the 4 Hz repaint storm."),
         ("🪞", "No more duplicate chat bubbles", "AI_PATS handler no longer overwrites last_agent_output that DONE_RE just captured, AND the dashboard's box-scraping fallback now skips for agents that have any stream-json activity (stream events are the source of truth)."),
@@ -1459,6 +1497,7 @@ class TermSession:
         self.stream_text:str=""          # accumulated assistant text from current stream
         self.stream_seq:int=0            # bumped on every stream event (so dashboard polls detect changes)
         self._json_line_buf:str=""       # buffer for partial JSON lines split across PTY chunks
+        self._stream_tokens_baseline:int=-1  # tokens_used baseline at start of current stream
         self.claude_resume_cmd:str=""; self.claude_working:bool=False; self.claude_thinking:bool=False
         self._ai_active_time:float=0.0   # last time working/thinking was detected
         self._in_response_box:bool=False  # True between ╭─ and ╰─
@@ -1619,6 +1658,25 @@ class TermSession:
                     _EVENT_Q.put(("notif",self.tab_id,msg,self._output_tail))
                 break
 
+    @staticmethod
+    def _summarize_tool_input(name: str, inp: dict) -> str:
+        """Short one-liner describing a tool call for the chat panel."""
+        if not inp:
+            return ""
+        # Common fields claude tools use
+        for k in ("file_path", "path", "command", "url", "pattern", "query"):
+            v = inp.get(k)
+            if v:
+                s = str(v)
+                return s if len(s) <= 80 else s[:77] + "…"
+        # Fallback: first key=value
+        try:
+            k, v = next(iter(inp.items()))
+            s = f"{k}={v}"
+            return s if len(s) <= 80 else s[:77] + "…"
+        except StopIteration:
+            return ""
+
     def _handle_stream_event(self, ev: dict) -> None:
         """Process one event from `claude --output-format stream-json`."""
         et = ev.get("type", "")
@@ -1629,18 +1687,42 @@ class TermSession:
             self.stream_active = True
             self.stream_text = ""
             self.stream_seq += 1
+            self._stream_tokens_baseline = -1  # set lazily on first usage
             self.claude_working = True
             self.claude_thinking = False
             self.waiting_input = False
             self._ai_active_time = time.time()
         elif et == "assistant":
             msg = ev.get("message", {}) or {}
+            # Running token count — assistant events carry incremental usage.
+            usage = msg.get("usage", {}) or {}
+            inp_tok = usage.get("input_tokens", 0) or 0
+            out_tok = usage.get("output_tokens", 0) or 0
+            if inp_tok or out_tok:
+                # Track per-run baseline so we don't double-count when result
+                # event fires with the final usage.
+                if self._stream_tokens_baseline < 0:
+                    self._stream_tokens_baseline = self.tokens_used
+                self.tokens_used = self._stream_tokens_baseline + inp_tok + out_tok
             for c in msg.get("content", []) or []:
-                if c.get("type") == "text":
+                ctype = c.get("type")
+                if ctype == "text":
                     self.stream_text += c.get("text", "")
-                    self.stream_seq += 1
-                    self.claude_working = True
-                    self._ai_active_time = time.time()
+                elif ctype == "tool_use":
+                    # Show tool calls inline so the user sees activity even
+                    # when claude isn't producing prose between calls.
+                    tname = c.get("name", "tool")
+                    tinp  = c.get("input", {}) or {}
+                    summary = self._summarize_tool_input(tname, tinp)
+                    self.stream_text += f"\n🔧 {tname}({summary})\n"
+                self.stream_seq += 1
+                self.claude_working = True
+                self._ai_active_time = time.time()
+        elif et == "user":
+            # Tool result event — claude is mid-task, keep activity fresh.
+            self.claude_working = True
+            self._ai_active_time = time.time()
+            self.stream_seq += 1
         elif et == "result":
             final_text = self.stream_text or ev.get("result", "") or ""
             self.stream_text = final_text
@@ -1649,7 +1731,13 @@ class TermSession:
             inp = usage.get("input_tokens", 0) or 0
             out = usage.get("output_tokens", 0) or 0
             if inp or out:
-                self.tokens_used += inp + out
+                if self._stream_tokens_baseline >= 0:
+                    # Already counted incrementally via assistant events;
+                    # snap to the final total to prevent drift.
+                    self.tokens_used = self._stream_tokens_baseline + inp + out
+                else:
+                    self.tokens_used += inp + out
+            self._stream_tokens_baseline = -1
             if ev.get("is_error"):
                 subtype     = ev.get("subtype", "error")
                 # Look in every plausible field for an error message
@@ -6146,12 +6234,26 @@ class AIDEWindow(QMainWindow):
         # arrived in the last _AI_IDLE_SECS seconds.
         needs_refresh=False
         for s in self.sessions.values():
+            # Stream-json tasks drive status from result events, not spinners.
+            # Tool calls between assistant chunks easily exceed 3s with no
+            # text update — let the result event flip the status, not idle.
+            if s.stream_active:
+                continue
             if (s.claude_working or s.claude_thinking) and s._ai_active_time>0:
                 if now - s._ai_active_time >= TermSession._AI_IDLE_SECS:
                     s.claude_working=False; s.claude_thinking=False
                     if not s.waiting_input:
                         s.waiting_input=True
                         s.last_ping_time=now; s.last_waiting_at=now
+                        # Capture context so the chat panel shows what claude said
+                        # — without this, the bubble is just "Waiting…".
+                        if not s.last_agent_output:
+                            try:
+                                _tail = _ANSI_RE.sub('', s._output_tail)
+                                _lines = [ln.rstrip() for ln in _tail.splitlines() if ln.strip()]
+                                s.last_agent_output = "\n".join(_lines[-40:]).strip()
+                            except Exception:
+                                pass
                         _EVENT_Q.put(("blink",s.tab_id,"Claude is waiting"))
                         _EVENT_Q.put(("notif",s.tab_id,"Claude is waiting",s._output_tail))
                     needs_refresh=True
@@ -6489,6 +6591,11 @@ class AIDEWindow(QMainWindow):
 
     def _set_font_size(self,size:int):
         for t in self._terminals: t.set_font_size(size)
+        # Also drive the dashboard chat panel font from the same A−/A+ ribbon control
+        try:
+            self._agent_table._chat_panel.set_font_size(size)
+        except Exception:
+            pass
 
     def _uber_focus(self, tid: int):
         """Uber mode: auto-focus the terminal that just got a question from Claude."""
