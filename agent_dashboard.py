@@ -397,13 +397,17 @@ class AgentTable(QWidget):
             model_short = raw_model.split("-")[1] if raw_model and "-" in raw_model else (raw_model or "default")
             tokens = s.get("tokens_used", 0)
             tok_str = f"{tokens:,}" if tokens else "—"
+            cmd_item = _item(s.get("cmd", ""))
+            sid = s.get("session_id", "")
+            if sid:
+                cmd_item.setToolTip(f"Session: {sid}")
             self._tbl.setItem(row, _COL_DOT,    dot)
             self._tbl.setItem(row, _COL_NAME,   _item(s.get("name", f"Agent {tid}")))
             self._tbl.setItem(row, _COL_STATUS, _item(label))
             self._tbl.setItem(row, _COL_ACTIVE, _item(_fmt_age(s.get("last_active", 0))))
             self._tbl.setItem(row, _COL_TAGS,   _item(", ".join(s.get("tags", []))))
             self._tbl.setItem(row, _COL_DIR,    _item(s.get("dir", "")))
-            self._tbl.setItem(row, _COL_CMD,    _item(s.get("cmd", "")))
+            self._tbl.setItem(row, _COL_CMD,    cmd_item)
             self._tbl.setItem(row, _COL_MODEL,  _item(model_short))
             self._tbl.setItem(row, _COL_TOKENS, _item(tok_str))
             self._tbl.setItem(row, _COL_ACCT,   _item(s.get("profile", "") or "default"))

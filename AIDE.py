@@ -117,7 +117,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "4.2.0"
+VERSION      = "4.3.0"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -477,6 +477,17 @@ class NeuralRailOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "4.3.0": [
+        ("◀", "Back-to-dashboard button in terminal view", "A '◀ Dashboard' button is now always visible at the top of the terminal view — click it to return to the agent table without using the hotkey bar."),
+        ("⛔", "Close guard when agents are working", "If any agent is actively working, AIDE prompts before closing so you can't accidentally kill a running task."),
+        ("🏷️", "Session ID tooltip on Command column", "Hover over the Command cell in the agent table to see the full Claude session ID extracted from the resume command."),
+        ("🔴", "No auto-launch on AIDE startup", "Agents are no longer auto-started when AIDE restarts — they are dispatched on-demand via -p when a task is sent."),
+        ("🔢", "Dock badge shows pending items", "macOS dock icon badge shows the count of agents waiting for approval + agents pending validation review."),
+    ],
+    "4.2.0": [
+        ("🤖", "Per-agent model selector", "Choose Opus 4.7, Sonnet 4.6, or Haiku 4.5 for each agent from the notes panel. The --model flag is injected into every task dispatch and autostart command."),
+        ("🔢", "Cumulative token counter", "The agent table shows running total of input+output tokens consumed by each agent, updated live from terminal output."),
+    ],
     "4.0.0": [
         ("⊞", "Agent dashboard — new primary view", "Replaces the terminal as the main view. All agents shown in a dense sortable table grouped by status (Pending Answer, Working, Idle). Search by name, filter by tag, double-click to open terminal."),
         ("⚡", "Agents auto-launch on tab creation", "AIDE now automatically executes each tab's autostart command when the tab is created or AIDE restarts — no more manual start. The NewTerminalDialog is removed."),
@@ -4774,6 +4785,17 @@ class AIDEWindow(QMainWindow):
         ml.addWidget(self._sidebar_splitter, 1)
         term_area=QWidget(); term_area.setStyleSheet(f"background:{C_BG.name()};")
         tv=QVBoxLayout(term_area); tv.setContentsMargins(0,0,0,0); tv.setSpacing(0)
+        _back_bar=QWidget(); _back_bar.setFixedHeight(26)
+        _back_bar.setStyleSheet(f"background:{C_PANEL.name()};border-bottom:1px solid {C_SURFACE.name()};")
+        _bbl=QHBoxLayout(_back_bar); _bbl.setContentsMargins(6,2,6,2); _bbl.setSpacing(0)
+        _back_btn=QPushButton("◀  Dashboard")
+        _back_btn.setStyleSheet(
+            f"QPushButton{{background:transparent;color:{C_MUTED.name()};border:none;"
+            f"font-size:11px;padding:2px 8px;}}"
+            f"QPushButton:hover{{color:{C_ACCENT.name()};background:{C_SURFACE.name()};}}")
+        _back_btn.clicked.connect(self._show_dashboard)
+        _bbl.addWidget(_back_btn); _bbl.addStretch()
+        tv.addWidget(_back_bar)
         self._notif_banner=NotifBanner(); tv.addWidget(self._notif_banner)
         # ── Outer vertical splitter: top row (panes 0+1) / bot row (panes 2+3) ──
         _splitter_ss=f"QSplitter::handle{{background:{C_SURFACE.name()};}}"
@@ -5104,6 +5126,10 @@ class AIDEWindow(QMainWindow):
         if s.claude_working:   status = "working"
         elif s.claude_thinking: status = "thinking"
         elif s.waiting_input:  status = "waiting"
+        resume_cmd = s.claude_resume_cmd or ""
+        session_id = ""
+        if m := re.search(r"--resume\s+([a-zA-Z0-9_-]+)", resume_cmd):
+            session_id = m.group(1)
         return {
             "tid":                s.tab_id,
             "name":               s.effective_title(),
@@ -5112,6 +5138,7 @@ class AIDEWindow(QMainWindow):
             "tags":               list(s.tags),
             "dir":                s.autostart_dir or s.info.cwd_full or s.info.cwd or "",
             "cmd":                s.claude_resume_cmd or s.autostart_cmd or "",
+            "session_id":         session_id,
             "profile":            s.claude_profile or "",
             "model":              s.claude_model or "",
             "tokens_used":        s.tokens_used,
@@ -5122,6 +5149,21 @@ class AIDEWindow(QMainWindow):
     def _refresh_dashboard(self):
         data = [self._session_data(s) for s in self.sessions.values()]
         self._agent_table.refresh(data)
+        self._update_dock_badge(data)
+
+    @staticmethod
+    def _update_dock_badge(data: list):
+        if not IS_MAC:
+            return
+        waiting   = sum(1 for s in data if s.get("status") == "waiting")
+        validate  = sum(1 for s in data if s.get("pending_validation"))
+        total     = waiting + validate
+        label     = str(total) if total else ""
+        try:
+            from AppKit import NSApplication
+            NSApplication.sharedApplication().dockTile().setBadgeLabel_(label)
+        except Exception:
+            pass
 
     def _show_dashboard(self):
         self._center_stack.setCurrentIndex(0)
@@ -6326,13 +6368,19 @@ class AIDEWindow(QMainWindow):
         active=data.get("active",-1)
         target=active if active in self.sessions else (next(iter(self.sessions)) if self.sessions else -1)
         if target>=0: self._switch_to(target)
-        for tid in list(self.sessions.keys()):
-            try:
-                self._run_autostart(tid)
-            except Exception as e:
-                _log_err(f"tab {tid} autostart failed: {e}")
 
     def closeEvent(self,event):
+        working=[s for s in self.sessions.values() if s.claude_working]
+        if working:
+            names=", ".join(s.effective_title() for s in working[:3])
+            if len(working)>3: names+=f" and {len(working)-3} more"
+            mb=QMessageBox(self)
+            mb.setWindowTitle("Agents Still Working")
+            mb.setText(f"These agents are still working:\n{names}\n\nClose AIDE anyway?")
+            mb.setStandardButtons(QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No)
+            mb.setDefaultButton(QMessageBox.StandardButton.No)
+            if mb.exec()!=QMessageBox.StandardButton.Yes:
+                event.ignore(); return
         self._save_session()
         if self._vault.is_unlocked(): self._vault.flush()
         for s in self.sessions.values(): s.kill()
