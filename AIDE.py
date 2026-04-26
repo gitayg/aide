@@ -4751,6 +4751,7 @@ class AIDEWindow(QMainWindow):
         self._agent_table.launch_agent.connect(self._run_autostart)
         self._agent_table.send_message.connect(self._dashboard_send_message)
         self._agent_table.set_validation.connect(self._dashboard_set_validation)
+        self._agent_table.run_task.connect(self._run_agent_task)
         self._center_stack.addWidget(self._agent_table)  # page 0
         self._center_stack.addWidget(term_area)           # page 1
         self._center_stack.setCurrentIndex(0)
@@ -5013,6 +5014,25 @@ class AIDEWindow(QMainWindow):
         if not s: return
         s.pending_validation = enabled
         s.validation_note    = note
+
+    def _run_agent_task(self, tid: int, task: str):
+        """Run claude one-shot (-p) in session tid for *task*, then it exits."""
+        s = self.sessions.get(tid)
+        if not s or not s.alive: return
+        d   = (s.autostart_dir or "").strip()
+        args = f" {s.claude_args}" if s.claude_args else ""
+        payload = b""
+        gh_exports = self._gh_token_exports(s)
+        if gh_exports:
+            payload += f"stty -echo; {gh_exports} stty echo\n".encode("utf-8")
+        if d:
+            payload += f"cd {shlex.quote(d)}\n".encode("utf-8")
+        safe_task = task.replace("'", "'\\''")
+        payload += f"claude -p '{safe_task}'{args}\n".encode("utf-8")
+        def _write(t=tid, p=payload):
+            sess = self.sessions.get(t)
+            if sess: sess.write(p)
+        QTimer.singleShot(200, _write)
 
     def _close_tab(self,tid:int):
         if len(self.sessions)<=1: return

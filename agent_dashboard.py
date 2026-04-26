@@ -189,6 +189,7 @@ class AgentTable(QWidget):
     launch_agent   = pyqtSignal(int)
     send_message   = pyqtSignal(int, str)
     set_validation = pyqtSignal(int, str, bool)
+    run_task       = pyqtSignal(int, str)   # tid, task text — one-shot agent run
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -453,20 +454,19 @@ class AgentTable(QWidget):
             act_val.triggered.connect(
                 lambda: self._ask_validation(tid, s.get("name", ""), ""))
 
-        # Redirect to another agent
+        # Redirect to another agent (on-demand, one-shot run)
         others = [x for x in self._sessions if x.get("tid") != tid]
         if others:
             menu.addSeparator()
-            red_m = menu.addMenu("↪  Redirect output to…")
+            red_m = menu.addMenu("↪  Redirect task to…")
             red_m.setStyleSheet(menu.styleSheet())
             for other in others:
                 ot  = other.get("tid", -1)
                 on  = other.get("name", f"Agent {ot}")
                 a   = red_m.addAction(on)
-                sn  = s.get("name", "")
                 a.triggered.connect(
-                    lambda _c, _ot=ot, _sn=sn:
-                    self.send_message.emit(_ot, f"# redirect from [{_sn}]: (check terminal)\n"))
+                    lambda _c, _ot=ot, _on=on:
+                    self._ask_redirect_task(_ot, _on))
 
         menu.popup(QCursor.pos())
 
@@ -493,3 +493,48 @@ class AgentTable(QWidget):
         dlg.note_accepted.connect(
             lambda note, t=tid: self.set_validation.emit(t, note, True))
         dlg.show()
+
+    def _ask_redirect_task(self, tid: int, agent_name: str):
+        dlg = _TaskInputDialog(agent_name, self)
+        dlg.task_accepted.connect(lambda task, t=tid: self.run_task.emit(t, task))
+        dlg.show()
+
+
+class _TaskInputDialog(QDialog):
+    """Ask the user what task to send to the target agent (on-demand run)."""
+    task_accepted = pyqtSignal(str)
+
+    def __init__(self, agent_name: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Redirect task to {agent_name}")
+        self.setFixedWidth(500)
+        self.setStyleSheet(f"QDialog{{background:{_BG};color:{_FG};}}")
+        self.setModal(True)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 16, 20, 16)
+        lay.setSpacing(10)
+        lbl = QLabel(f"Task for <b>{agent_name}</b> (agent will run once and exit):")
+        lbl.setStyleSheet(f"color:{_MUTED};font-size:11px;")
+        lay.addWidget(lbl)
+        self._edit = QPlainTextEdit()
+        self._edit.setPlaceholderText("Describe the task…")
+        self._edit.setStyleSheet(
+            f"QPlainTextEdit{{background:{_SURFACE};color:{_FG};"
+            f"border:1px solid {_SURFACE};border-radius:4px;"
+            f"font-family:Menlo,Consolas,Monospace;font-size:11px;padding:6px;}}")
+        self._edit.setMinimumHeight(100)
+        lay.addWidget(self._edit)
+        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok |
+                              QDialogButtonBox.StandardButton.Cancel)
+        bb.setStyleSheet(
+            f"QPushButton{{background:{_SURFACE};color:{_FG};border:none;"
+            f"border-radius:4px;padding:5px 16px;}}")
+        bb.accepted.connect(self._on_accept)
+        bb.rejected.connect(self.close)
+        lay.addWidget(bb)
+
+    def _on_accept(self):
+        task = self._edit.toPlainText().strip()
+        if task:
+            self.task_accepted.emit(task)
+        self.close()
