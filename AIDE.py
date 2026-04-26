@@ -117,7 +117,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "4.10.1"
+VERSION      = "4.10.2"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -148,6 +148,19 @@ def _ping_pong_sound(tab_index: int = 0):
     tmp.write_bytes(buf.getvalue())
     subprocess.Popen(["afplay", str(tmp)], stdout=subprocess.DEVNULL,
                      stderr=subprocess.DEVNULL)
+
+def _chat_answer_sound(tab_index: int = 0):
+    """Single per-agent chirp — fires when an agent finishes answering a
+    chat-panel task. Pitch is keyed by tab_index so the user can tell
+    which agent just answered without looking."""
+    _ping_pong_sound(tab_index)
+
+def _chat_pending_sound(tab_index: int = 0):
+    """Two per-agent beeps — fires when an agent transitions to waiting
+    for a user response. Same pitch family as _chat_answer_sound."""
+    _ping_pong_sound(tab_index)
+    time.sleep(0.13)
+    _ping_pong_sound(tab_index)
 
 def _smash_sound():
     """Ping-pong smash: sharp crack + noise burst, louder and punchier than a tick."""
@@ -503,6 +516,10 @@ class NeuralRailOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "4.10.2": [
+        ("🔔", "Per-agent chat-panel sounds", "When an agent finishes a chat-panel task it plays a single ping; when it transitions to waiting it plays two pings. Pitch is keyed by tab id (~80 Hz steps over 8 tabs) so you can tell which agent is asking without looking. Wired through the existing _EVENT_Q so it composes with the configurable notification system."),
+        ("🛡️", "Richer MCP request bubbles", "MCP permission popup messages in the chat panel now include: a one-line headline with the most relevant arg (command/file_path/path/url/pattern), the full tool input JSON (up to 4000 chars instead of 400), and a footer with the agent's working dir and session id."),
+    ],
     "4.10.1": [
         ("🩹", "Allow-button crash fix", "resolve_permission still referenced self._mcp_lock, which the v4.10.0 SecureMCP refactor removed (sessions moved into the SecureMCP instance). Clicking Allow on a permission popup raised AttributeError and crashed the app. Restored the lock as self._perm_lock — kept narrow to just the permission-event/result dicts."),
     ],
@@ -1704,6 +1721,7 @@ class TermSession:
                 if not was_waiting:
                     _EVENT_Q.put(("blink",self.tab_id,msg))
                     _EVENT_Q.put(("notif",self.tab_id,msg,self._output_tail))
+                    _EVENT_Q.put(("chat_pending", self.tab_id))
                 break
 
     @staticmethod
@@ -1820,12 +1838,21 @@ class TermSession:
             self.waiting_input = True
             self.last_ping_time = time.time()
             self.last_waiting_at = self.last_ping_time
+            # Per-agent chime — single chirp on success, double on error
+            try:
+                if ev.get("is_error"):
+                    _EVENT_Q.put(("chat_pending", self.tab_id))
+                else:
+                    _EVENT_Q.put(("chat_answer", self.tab_id))
+            except Exception:
+                pass
 
     def _fire_wait_events(self):
         """Called 300 ms after ╰─ is detected. Only fires if still waiting (not cleared by a new spinner)."""
         if self.waiting_input and not self.claude_working and not self.claude_thinking:
             _EVENT_Q.put(("blink",self.tab_id,"Claude is waiting"))
             _EVENT_Q.put(("notif",self.tab_id,"Claude is waiting",self._output_tail))
+            _EVENT_Q.put(("chat_pending", self.tab_id))
 
     # Valid hostname: letters, digits, hyphens, dots — no shell metacharacters.
     _HOSTNAME_RE = re.compile(r'^[a-zA-Z0-9]([a-zA-Z0-9\-.]*[a-zA-Z0-9])?$')
@@ -6185,6 +6212,14 @@ class AIDEWindow(QMainWindow):
                 self._on_neural_delivered(ev[1], ev[2], ev[3])
             elif ev[0]=="blink":
                 QApplication.alert(self,3000)
+            elif ev[0]=="chat_answer":
+                # Per-agent single chirp — agent just finished a chat task
+                threading.Thread(target=_chat_answer_sound, args=(ev[1],),
+                                 daemon=True).start()
+            elif ev[0]=="chat_pending":
+                # Per-agent double chirp — agent is waiting for the user
+                threading.Thread(target=_chat_pending_sound, args=(ev[1],),
+                                 daemon=True).start()
             elif ev[0]=="github_update" and not self._update_pending:
                 self._update_pending=True
                 remote_ver=ev[1]
@@ -6247,16 +6282,37 @@ class AIDEWindow(QMainWindow):
         # Use the dashboard's dedicated mcp channel — writing to last_agent_output
         # was getting filtered out for stream-json agents.
         if session is not None and tab_id >= 0:
+            # One-line headline: tool + most-relevant arg
+            headline_parts = [f"Permission requested: {tool_name}"]
+            for key in ("command", "file_path", "path", "url", "pattern"):
+                v = tool_input.get(key) if isinstance(tool_input, dict) else None
+                if v:
+                    s = str(v)
+                    if len(s) > 200: s = s[:197] + "…"
+                    headline_parts.append(f"{key}: {s}")
+                    break
+            # Full input dump for context
             try:
-                input_str = json.dumps(tool_input, indent=2)
-                if len(input_str) > 400:
-                    input_str = input_str[:400] + "\n…(truncated)"
+                full_input = json.dumps(tool_input, indent=2, ensure_ascii=False)
             except Exception:
-                input_str = repr(tool_input)
+                full_input = repr(tool_input)
+            if len(full_input) > 4000:
+                full_input = full_input[:4000] + "\n…(truncated, " + str(len(full_input) - 4000) + " more chars)"
+            # Working dir + session id for traceability
+            sess_id = ""
             try:
-                self._agent_table.add_mcp_message(
-                    tab_id,
-                    f"Permission requested: {tool_name}\n{input_str}")
+                m = re.search(r"--resume\s+([a-zA-Z0-9_-]+)", session.claude_resume_cmd or "")
+                if m: sess_id = m.group(1)
+            except Exception:
+                pass
+            footer = []
+            if session.autostart_dir: footer.append(f"dir: {session.autostart_dir}")
+            if sess_id:               footer.append(f"session: {sess_id}")
+            text = "\n".join(headline_parts) + "\n\n" + full_input
+            if footer:
+                text += "\n\n" + " · ".join(footer)
+            try:
+                self._agent_table.add_mcp_message(tab_id, text)
             except Exception:
                 pass
             QApplication.processEvents()
@@ -6458,6 +6514,7 @@ class AIDEWindow(QMainWindow):
                                 pass
                         _EVENT_Q.put(("blink",s.tab_id,"Claude is waiting"))
                         _EVENT_Q.put(("notif",s.tab_id,"Claude is waiting",s._output_tail))
+                        _EVENT_Q.put(("chat_pending", s.tab_id))
                     needs_refresh=True
         if needs_refresh:
             self._refresh_cards()
