@@ -117,7 +117,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "4.8.7"
+VERSION      = "4.8.8"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -503,6 +503,9 @@ class NeuralRailOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "4.8.8": [
+        ("🔒", "Click-sort disabled, in-place updates safe", "QHeaderView click-sort and indicator are off; setSortingEnabled(False) is permanent. Qt's internal sort was reshuffling rows on every status change because sort roles updated, which made the in-place updater's `rows[N]` no longer match the table's visual row N — clicking row 'AIDE' was selecting a different agent. Display order is now exactly what _filtered() returns: validation-pinned then by tid, stable across all refreshes."),
+    ],
     "4.8.7": [
         ("🛡️", "MCP requests reach the chat panel reliably", "Permission requests now route through a dedicated AgentTable.add_mcp_message() channel instead of last_agent_output. Previously they were routed via the box-scraping fallback path, which is intentionally disabled for stream-json agents (to prevent duplicate bubbles) — so MCP messages got silently dropped on every chat-panel task. Rendered with a purple border + 🛡️ MCP label so they're clearly distinct from agent text and user prompts."),
         ("🔠", "Bold agent name when waiting", "Agents in 'Pending Answer' state now show their name in bold in the dashboard table — visual cue that something needs attention."),

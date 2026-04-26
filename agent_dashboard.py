@@ -525,8 +525,13 @@ class AgentTable(QWidget):
         self._tbl.setColumnWidth(_COL_TOKENS,  80)
         self._tbl.setColumnWidth(_COL_ACCT,    80)
         self._tbl.setColumnWidth(_COL_ACTIONS, 170)
-        h.setSortIndicatorShown(True)
-        h.setSectionsClickable(True)
+        # Click-sort permanently disabled. Our _filtered() order is stable
+        # (validation-pinned + tid), and Group toggle handles status grouping.
+        # Letting Qt re-sort visually after a header click broke the in-place
+        # updater — `rows[N]` no longer matched the table's visual row N, so
+        # clicks selected the wrong agent.
+        h.setSortIndicatorShown(False)
+        h.setSectionsClickable(False)
         self._tbl.verticalHeader().setVisible(False)
         self._tbl.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._tbl.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -854,8 +859,10 @@ class AgentTable(QWidget):
                     item.setBackground(QBrush(bg))
             # Track button SHAPE — what the in-place updater compares against.
             self._row_status[row] = "answer" if status == "waiting" else "review"
-        # Re-enable header click-sort only when there are no group rows to scramble.
-        self._tbl.setSortingEnabled(self._group_by == "none")
+        # Sorting permanently OFF — the row order in `rows` is what we want
+        # displayed, and Qt's internal sort would reshuffle rows on every
+        # status change (sort roles change), breaking the in-place updater.
+        self._tbl.setSortingEnabled(False)
         # Restore the previously-selected agent's row.
         if sel_tid >= 0:
             for _r in range(self._tbl.rowCount()):
