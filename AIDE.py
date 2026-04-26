@@ -117,7 +117,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "4.6.0"
+VERSION      = "4.6.1"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -477,6 +477,11 @@ class NeuralRailOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "4.6.1": [
+        ("🖱", "Dashboard clicks no longer eaten", "Table refresh dropped from 4 Hz back to 1 Hz — the cell-widget churn was making clicks land on widgets being torn down. Streaming runs at 4 Hz on a separate panel-only refresh that doesn't touch the table."),
+        ("🆔", "Resume parameter now captured from JSON", "Stream-json events carry `session_id` directly — we read it from `system/init` and `result` events instead of scraping it from the human-readable terminal text (which doesn't appear in -p mode). Subsequent task dispatches now correctly use --resume <id>."),
+        ("🚨", "Detailed error reporting", "Task errors now show subtype, duration, cost, turn count, and session ID — both as a red error bubble in the chat panel and in the status cell tooltip. Dispatch failures (agent not running) include the agent's working directory and recovery hint."),
+    ],
     "4.6.0": [
         ("💬", "Agent conversation panel", "Clicking an agent in the dashboard opens a right-side panel showing the full conversation — tasks you sent appear on the right, agent responses on the left. Ask questions or send tasks directly from the panel without leaving the dashboard."),
         ("🌊", "Streaming JSON responses", "Tasks now dispatch with `claude -p --output-format stream-json --verbose`. The chat panel renders the response progressively as text events arrive instead of waiting for the box to close. Token counts come straight from the result event — no more box-scraping or ANSI heuristics."),
@@ -1580,6 +1585,9 @@ class TermSession:
     def _handle_stream_event(self, ev: dict) -> None:
         """Process one event from `claude --output-format stream-json`."""
         et = ev.get("type", "")
+        sid = ev.get("session_id", "")
+        if sid and re.fullmatch(r"[a-zA-Z0-9_-]+", sid):
+            self.claude_resume_cmd = f"claude --resume {sid}"
         if et == "system" and ev.get("subtype") == "init":
             self.stream_active = True
             self.stream_text = ""
@@ -1606,7 +1614,21 @@ class TermSession:
             if inp or out:
                 self.tokens_used += inp + out
             if ev.get("is_error"):
-                self.task_result = (ev.get("result") or "Task failed")[:500]
+                subtype     = ev.get("subtype", "error")
+                err_text    = ev.get("result") or final_text or "(no error message)"
+                duration_ms = ev.get("duration_ms", 0)
+                cost        = ev.get("total_cost_usd", 0) or 0
+                num_turns   = ev.get("num_turns", 0)
+                lines = [
+                    f"[{subtype}] {err_text}",
+                    f"duration: {duration_ms} ms · turns: {num_turns} · cost: ${cost:.4f}",
+                    f"tokens: {inp} in / {out} out",
+                ]
+                if sid:
+                    lines.append(f"session: {sid}")
+                self.task_result = "\n".join(lines)
+            else:
+                self.task_result = ""
             self.stream_active = False
             self.stream_seq += 1
             self.claude_working = False
@@ -4948,7 +4970,8 @@ class AIDEWindow(QMainWindow):
         self._hotkey_bar.set_btn_active("toggle_uber", self.config.uber_mode)
         self._hotkey_bar.set_btn_active("toggle_dashboard", True)
         for interval,fn in [(100,self._process_events),(1000,self._check_idle),
-                             (500,self._refresh_cards),(250,self._refresh_dashboard),
+                             (500,self._refresh_cards),(1000,self._refresh_dashboard),
+                             (250,self._refresh_dashboard_stream),
                              (30000,self._save_session),(5000,self._check_for_update)]:
             t=QTimer(self); t.timeout.connect(fn); t.start(interval)
         self._load_session()
@@ -5397,6 +5420,14 @@ class AIDEWindow(QMainWindow):
             "validation_note":    s.validation_note,
         }
 
+    def _refresh_dashboard_stream(self):
+        """Lighter refresh — only updates conversations/streaming in the chat panel.
+        Does NOT touch the table (avoids click-stealing widget churn)."""
+        if not any(s.stream_active for s in self.sessions.values()):
+            return
+        data = [self._session_data(s) for s in self.sessions.values()]
+        self._agent_table.refresh_stream_only(data)
+
     def _refresh_dashboard(self):
         data = [self._session_data(s) for s in self.sessions.values()]
         self._agent_table.refresh(data)
@@ -5468,7 +5499,12 @@ class AIDEWindow(QMainWindow):
         if not s:
             return
         if not s.alive:
-            s.task_result = "⚠ Agent not running — launch it first"
+            s.task_result = (
+                "⚠ Agent not running — its shell process has exited.\n"
+                f"tab id: {tid}\n"
+                f"dir: {s.autostart_dir or '(unset)'}\n"
+                "Right-click the agent → Launch / Restart, or open the terminal."
+            )
             return
         s.task_result = ""
         d    = (s.autostart_dir or "").strip()

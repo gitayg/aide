@@ -303,6 +303,16 @@ class AgentChatPanel(QWidget):
                     f'padding:5px 10px;border-radius:8px;'
                     f'display:inline-block;max-width:88%;">{text}{cursor}</span>'
                     f'<div style="text-align:left;{ts_ss}">{label}</div></div>')
+            elif role == "error":
+                parts.append(
+                    f'<div style="text-align:left;margin:5px 0;">'
+                    f'<div style="background:{_RED}22;color:{_FG};'
+                    f'border-left:3px solid {_RED};padding:6px 10px;'
+                    f'border-radius:4px;display:inline-block;max-width:92%;'
+                    f'white-space:pre-wrap;">'
+                    f'<span style="color:{_RED};font-weight:bold;">⚠ Error</span><br>{text}'
+                    f'</div>'
+                    f'<div style="text-align:left;{ts_ss}">{tstr}</div></div>')
             elif role == "status":
                 parts.append(
                     f'<div style="text-align:center;margin:3px 0;'
@@ -464,6 +474,11 @@ class AgentTable(QWidget):
         self._sessions = sessions
         self._rebuild_tags()
         self._repopulate()
+        self._update_conversations(sessions)
+
+    def refresh_stream_only(self, sessions: List[dict]):
+        """Stream-pacing refresh — updates the chat panel without touching the table."""
+        self._sessions = sessions
         self._update_conversations(sessions)
 
     # ── Tag management ─────────────────────────────────────────────────────────
@@ -712,6 +727,7 @@ class AgentTable(QWidget):
             stream_seq    = s.get("stream_seq", 0)
             stream_active = s.get("stream_active", False)
             stream_text   = s.get("stream_text", "")
+            task_result   = s.get("task_result", "")
             prev_seq      = self._agent_last_stream_seq.get(tid, 0)
 
             if stream_seq != prev_seq:
@@ -726,6 +742,12 @@ class AgentTable(QWidget):
                     else:
                         conv.append({"role": "agent", "text": stream_text,
                                      "streaming": True, "ts": now})
+                elif task_result:
+                    # Stream finished with an error — replace any in-flight
+                    # streaming bubble with a detailed error message.
+                    if last and last.get("role") == "agent" and last.get("streaming"):
+                        conv.pop()
+                    conv.append({"role": "error", "text": task_result, "ts": now})
                 else:
                     if last and last.get("role") == "agent" and last.get("streaming"):
                         last["text"] = stream_text or last.get("text", "")
@@ -734,6 +756,17 @@ class AgentTable(QWidget):
                     elif stream_text:
                         conv.append({"role": "agent", "text": stream_text,
                                      "streaming": False, "ts": now})
+
+            # Dispatch-time errors (e.g. agent not running) — task_result set
+            # without a stream. Add as error bubble once per change.
+            if task_result and stream_seq == prev_seq:
+                conv = self._conversations.setdefault(tid, [])
+                last = conv[-1] if conv else None
+                if not (last and last.get("role") == "error"
+                        and last.get("text") == task_result):
+                    conv.append({"role": "error", "text": task_result,
+                                 "ts": time.time()})
+                    changed_tids.add(tid)
 
             # Fallback: legacy box-scraping path for non-stream-json runs
             last_waiting_at   = s.get("last_waiting_at", 0.0)
