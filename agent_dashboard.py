@@ -166,7 +166,8 @@ class _ChatInput(QTextEdit):
     """Multi-line text input for the chat panel.
 
     Enter sends the message. Shift+Enter (or Cmd+Enter) inserts a newline.
-    Shrinks/grows up to 5 lines based on content."""
+    Pasting an image saves it to a temp PNG and inserts the file path —
+    same behaviour the terminal had via 'Paste image as file path'."""
     submitted = pyqtSignal()
 
     def __init__(self, parent=None):
@@ -185,6 +186,27 @@ class _ChatInput(QTextEdit):
         new_h = max(self._min_h, min(self._max_h, doc_h))
         if new_h != self.height():
             self.setFixedHeight(new_h)
+
+    def insertFromMimeData(self, source):
+        # If the clipboard has an image, save to a temp PNG and insert the path.
+        if source.hasImage():
+            try:
+                from PyQt6.QtGui import QImage
+                img = QImage(source.imageData())
+                if not img.isNull():
+                    import tempfile, os
+                    tmpdir = os.path.join(tempfile.gettempdir(), "aide_chat_pastes")
+                    os.makedirs(tmpdir, exist_ok=True)
+                    path = os.path.join(
+                        tmpdir,
+                        time.strftime("paste-%Y%m%d-%H%M%S") + f"-{int(time.time()*1000) % 1000:03d}.png")
+                    if img.save(path, "PNG"):
+                        self.insertPlainText(path)
+                        return
+            except Exception:
+                pass
+        # Fall through for plain text
+        super().insertFromMimeData(source)
 
     def keyPressEvent(self, e):
         if e.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):

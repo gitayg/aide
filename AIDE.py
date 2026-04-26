@@ -117,7 +117,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "4.9.2"
+VERSION      = "4.10.0"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -503,6 +503,11 @@ class NeuralRailOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "4.10.0": [
+        ("📦", "MCP extracted to secure_mcp.py", "All MCP server logic (SSE sessions, JSON-RPC dispatch, tool registry) lives in a new SecureMCP class in secure_mcp.py. neural.py owns an instance and registers tools on it. Cleaner separation: HTTP transport stays in neural.py, MCP protocol in secure_mcp.py."),
+        ("🧠", "Neural Bus operations exposed as MCP tools", "Three new tools alongside permission_prompt: neural_send_message, neural_list_agents, neural_get_messages. Agents can now use the Neural Bus through standard MCP tools/call without the wrapper script or env-var setup."),
+        ("📷", "Paste image as file path in chat", "Pasting an image into the chat input saves it to /tmp/aide_chat_pastes/paste-<timestamp>.png and inserts the path — same pattern as the terminal's old image-paste feature. Useful for asking the agent to look at a screenshot."),
+    ],
     "4.9.2": [
         ("🛡️", "MCP transport fixed — `claude mcp list` now succeeds", "Two issues: (1) the `claude` CLI lookup didn't search ~/.local/bin so AIDE.app launches couldn't register the server; (2) our SSE handler was returning JSON-RPC responses in the HTTP POST body, but the MCP SSE transport spec requires responses to come back via the SSE event stream — claude opened the stream, posted `initialize`, got 200 in the body, kept waiting on SSE, and timed out. Both fixed: _find_claude_bin() probes ~/.local/bin, /opt/homebrew/bin, /usr/local/bin, and the user's login shell; _mcp_post now returns 202 + pushes the result via the SSE queue."),
         ("🪵", "MCP registration logged", "~/.aide/app.log gets `[mcp] using claude binary: …` and `[mcp] registered aide MCP at …` lines so failures are debuggable."),

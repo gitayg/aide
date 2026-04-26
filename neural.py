@@ -78,12 +78,141 @@ class NeuralBus:
         self._server: Optional[_ThreadedHTTPServer] = None
         self.port: int = 0
 
-        # MCP permission-prompt state
+        # MCP transport — moved to secure_mcp.SecureMCP.
+        # Tools are registered on `self.mcp` after construction (see
+        # _register_mcp_tools below).
+        from secure_mcp import SecureMCP
+        self.mcp = SecureMCP(server_name="aide-neural", server_version="1.0.0")
         self._on_permission = on_permission
-        self._mcp_lock     = threading.Lock()
-        self._mcp_sessions: Dict[str, queue.Queue] = {}   # sessionId → SSE queue
         self._perm_events:  Dict[str, threading.Event] = {}
         self._perm_results: Dict[str, dict] = {}
+        self._register_mcp_tools()
+
+    # ── MCP tool registration ─────────────────────────────────────────────────
+
+    def _register_mcp_tools(self) -> None:
+        """Wire AIDE features as MCP tools so claude can call them by name."""
+        self.mcp.register_tool(
+            name="permission_prompt",
+            description="Ask the human whether to allow a Claude Code tool call.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "tool_name":  {"type": "string"},
+                    "tool_input": {"type": "object"},
+                },
+                "required": ["tool_name", "tool_input"],
+            },
+            handler=self._mcp_permission_prompt,
+        )
+        # Neural-bus operations exposed as MCP tools — agents can use these
+        # without the wrapper / env-var setup.
+        self.mcp.register_tool(
+            name="neural_send_message",
+            description="Send a message to another agent on the AIDE Neural Bus.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "from_token": {"type": "string", "description": "Sender's neural token"},
+                    "to":         {"type": "string", "description": "Recipient agent name, or 'broadcast'"},
+                    "content":    {"type": "string"},
+                },
+                "required": ["from_token", "to", "content"],
+            },
+            handler=self._mcp_send_message,
+        )
+        self.mcp.register_tool(
+            name="neural_list_agents",
+            description="List all agents currently registered on the Neural Bus.",
+            input_schema={"type": "object", "properties": {}},
+            handler=self._mcp_list_agents,
+        )
+        self.mcp.register_tool(
+            name="neural_get_messages",
+            description="Get unread messages for an agent on the Neural Bus.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "token": {"type": "string", "description": "The agent's neural token"},
+                },
+                "required": ["token"],
+            },
+            handler=self._mcp_get_messages,
+        )
+
+    def _mcp_permission_prompt(self, args: dict) -> str:
+        import uuid
+        perm_id = uuid.uuid4().hex[:8]
+        ev = threading.Event()
+        self._perm_events[perm_id] = ev
+        if self._on_permission:
+            self._on_permission(perm_id, args)
+        approved = ev.wait(timeout=300)
+        res = self._perm_results.pop(perm_id, None)
+        self._perm_events.pop(perm_id, None)
+        decision = "deny"
+        if approved and res is not None:
+            decision = res.get("decision", "deny")
+        behavior = "allow" if decision == "allow" else "deny"
+        payload = {"behavior": behavior}
+        if behavior == "allow":
+            payload["updatedInput"] = args.get("tool_input", {})
+        else:
+            payload["message"] = "User denied the tool request."
+        return json.dumps(payload)
+
+    def _mcp_send_message(self, args: dict) -> str:
+        from_token = args.get("from_token", "")
+        to_name    = args.get("to", "")
+        content    = args.get("content", "")
+        with self._lock:
+            sender = self._agents.get(from_token)
+            if not sender:
+                return json.dumps({"ok": False, "error": "from_token not registered"})
+            recipients = []
+            if to_name == "broadcast":
+                recipients = [a for tok, a in self._agents.items() if tok != from_token]
+            else:
+                for tok, a in self._agents.items():
+                    if a.name == to_name:
+                        recipients.append(a)
+                        break
+            if not recipients and to_name != "broadcast":
+                return json.dumps({"ok": False, "error": f"agent '{to_name}' not found"})
+        for r in recipients:
+            msg = NeuralMessage(
+                from_agent=sender.name, to_agent=r.name, content=content,
+                ts=time.time(), msg_type="message")
+            self._messages.append(msg)
+            self._on_message(msg)
+        return json.dumps({"ok": True, "delivered_to": [r.name for r in recipients]})
+
+    def _mcp_list_agents(self, args: dict) -> str:
+        with self._lock:
+            agents = [
+                {"name": a.name, "tag": a.tag, "task": a.task,
+                 "session_id": a.session_id}
+                for a in self._agents.values()
+            ]
+        return json.dumps({"agents": agents})
+
+    def _mcp_get_messages(self, args: dict) -> str:
+        token = args.get("token", "")
+        with self._lock:
+            agent = self._agents.get(token)
+            if not agent:
+                return json.dumps({"ok": False, "error": "token not registered"})
+            unread = [m for m in self._messages
+                      if m.to_agent == agent.name and m.ts > agent.last_seen]
+            agent.last_seen = time.time()
+        return json.dumps({
+            "ok": True,
+            "messages": [
+                {"from": m.from_agent, "content": m.content, "ts": m.ts,
+                 "type": m.msg_type}
+                for m in unread
+            ],
+        })
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
 
@@ -113,9 +242,7 @@ class NeuralBus:
 
             # ── MCP SSE stream ─────────────────────────────────────────────
             def _mcp_sse(self, sid: str):
-                q: queue.Queue = queue.Queue()
-                with bus._mcp_lock:
-                    bus._mcp_sessions[sid] = q
+                q = bus.mcp.open_sse(sid)
                 # Tell Claude where to POST requests for this session
                 endpoint_url = f"http://127.0.0.1:{bus.port}/mcp?sessionId={sid}"
                 self.send_response(200)
@@ -141,106 +268,15 @@ class NeuralBus:
                 except (BrokenPipeError, ConnectionResetError):
                     pass
                 finally:
-                    with bus._mcp_lock:
-                        bus._mcp_sessions.pop(sid, None)
+                    bus.mcp.close_sse(sid)
 
             # ── MCP JSON-RPC POST ──────────────────────────────────────────
-            def _mcp_push(self, sid: str, msg: dict):
-                """Send a JSON-RPC response to the client via the SSE channel.
-                Per MCP SSE transport spec, responses go via the SSE stream
-                that the client opened on /mcp/sse — NOT in the POST body."""
-                with bus._mcp_lock:
-                    q = bus._mcp_sessions.get(sid)
-                if q is not None:
-                    q.put(msg)
-
             def _mcp_post(self, sid: str):
-                d    = self._body()
-                meth = d.get("method", "")
-                rid  = d.get("id")
-
-                # MCP SSE protocol: POST returns 202 ACK, response is pushed
-                # via the SSE channel.
-                if meth == "initialize":
-                    self.send_response(202); self.end_headers()
-                    self._mcp_push(sid, {
-                        "jsonrpc": "2.0", "id": rid,
-                        "result": {
-                            "protocolVersion": "2024-11-05",
-                            "capabilities": {"tools": {}},
-                            "serverInfo": {"name": "aide-neural", "version": "3.0.0"},
-                        }
-                    })
-                    return
-
-                if meth == "notifications/initialized":
-                    self.send_response(202); self.end_headers(); return
-
-                if meth == "tools/list":
-                    self.send_response(202); self.end_headers()
-                    self._mcp_push(sid, {
-                        "jsonrpc": "2.0", "id": rid,
-                        "result": {"tools": [{
-                            "name": "permission_prompt",
-                            "description": "Ask the human whether to allow a Claude Code tool call.",
-                            "inputSchema": {
-                                "type": "object",
-                                "properties": {
-                                    "tool_name":  {"type": "string"},
-                                    "tool_input": {"type": "object"},
-                                },
-                                "required": ["tool_name", "tool_input"],
-                            }
-                        }]}
-                    })
-                    return
-
-                if meth == "tools/call" and d.get("params", {}).get("name") == "permission_prompt":
-                    # ACK the POST immediately so claude doesn't block the
-                    # HTTP request. The human's decision is pushed via SSE
-                    # once they answer the dialog.
-                    self.send_response(202); self.end_headers()
-                    inp = d.get("params", {}).get("arguments", {})
-                    def _resolve():
-                        perm_id = uuid.uuid4().hex[:8]
-                        ev = threading.Event()
-                        with bus._mcp_lock:
-                            bus._perm_events[perm_id] = ev
-                        if bus._on_permission:
-                            bus._on_permission(perm_id, inp)
-                        approved = ev.wait(timeout=300)
-                        with bus._mcp_lock:
-                            res = bus._perm_results.pop(perm_id, None)
-                            bus._perm_events.pop(perm_id, None)
-                        decision = "deny"
-                        if approved and res is not None:
-                            decision = res.get("decision", "deny")
-                        behavior = "allow" if decision == "allow" else "deny"
-                        # Per MCP permission_prompt spec: response is a JSON
-                        # string in `content[0].text` with {behavior, updatedInput}.
-                        payload = {"behavior": behavior}
-                        if behavior == "allow":
-                            payload["updatedInput"] = inp.get("tool_input", {})
-                        else:
-                            payload["message"] = "User denied the tool request."
-                        self._mcp_push(sid, {
-                            "jsonrpc": "2.0", "id": rid,
-                            "result": {
-                                "content": [
-                                    {"type": "text", "text": json.dumps(payload)}
-                                ],
-                            },
-                        })
-                    threading.Thread(target=_resolve, daemon=True).start()
-                    return
-
-                # Any other method — return error via SSE if rid is set
+                """Delegate JSON-RPC dispatch to secure_mcp. Always 202 the
+                POST — responses are pushed via the SSE channel."""
+                d = self._body()
                 self.send_response(202); self.end_headers()
-                if rid is not None:
-                    self._mcp_push(sid, {
-                        "jsonrpc": "2.0", "id": rid,
-                        "error": {"code": -32601, "message": f"Method not found: {meth}"},
-                    })
+                bus.mcp.handle_jsonrpc(sid, d)
 
             def do_POST(self):
                 try:
