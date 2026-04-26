@@ -84,6 +84,10 @@ class NeuralBus:
         from secure_mcp import SecureMCP
         self.mcp = SecureMCP(server_name="aide-neural", server_version="1.0.0")
         self._on_permission = on_permission
+        # Permission-prompt synchronization between the MCP tool thread (which
+        # waits on the Event) and the Qt main thread (which posts the result
+        # via resolve_permission).
+        self._perm_lock     = threading.Lock()
         self._perm_events:  Dict[str, threading.Event] = {}
         self._perm_results: Dict[str, dict] = {}
         self._register_mcp_tools()
@@ -144,12 +148,14 @@ class NeuralBus:
         import uuid
         perm_id = uuid.uuid4().hex[:8]
         ev = threading.Event()
-        self._perm_events[perm_id] = ev
+        with self._perm_lock:
+            self._perm_events[perm_id] = ev
         if self._on_permission:
             self._on_permission(perm_id, args)
         approved = ev.wait(timeout=300)
-        res = self._perm_results.pop(perm_id, None)
-        self._perm_events.pop(perm_id, None)
+        with self._perm_lock:
+            res = self._perm_results.pop(perm_id, None)
+            self._perm_events.pop(perm_id, None)
         decision = "deny"
         if approved and res is not None:
             decision = res.get("decision", "deny")
@@ -332,7 +338,7 @@ class NeuralBus:
 
     def resolve_permission(self, perm_id: str, approved: bool):
         """Called from the Qt main thread after the human decides."""
-        with self._mcp_lock:
+        with self._perm_lock:
             ev = self._perm_events.get(perm_id)
             self._perm_results[perm_id] = {"decision": "allow" if approved else "deny"}
         if ev:

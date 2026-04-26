@@ -117,7 +117,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "4.10.0"
+VERSION      = "4.10.1"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -503,6 +503,9 @@ class NeuralRailOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "4.10.1": [
+        ("🩹", "Allow-button crash fix", "resolve_permission still referenced self._mcp_lock, which the v4.10.0 SecureMCP refactor removed (sessions moved into the SecureMCP instance). Clicking Allow on a permission popup raised AttributeError and crashed the app. Restored the lock as self._perm_lock — kept narrow to just the permission-event/result dicts."),
+    ],
     "4.10.0": [
         ("📦", "MCP extracted to secure_mcp.py", "All MCP server logic (SSE sessions, JSON-RPC dispatch, tool registry) lives in a new SecureMCP class in secure_mcp.py. neural.py owns an instance and registers tools on it. Cleaner separation: HTTP transport stays in neural.py, MCP protocol in secure_mcp.py."),
         ("🧠", "Neural Bus operations exposed as MCP tools", "Three new tools alongside permission_prompt: neural_send_message, neural_list_agents, neural_get_messages. Agents can now use the Neural Bus through standard MCP tools/call without the wrapper script or env-var setup."),
