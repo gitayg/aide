@@ -40,7 +40,7 @@ _STATUS_COLOR = {
 _STATUS_LABEL = {
     "waiting":    "Pending Answer",
     "thinking":   "Thinking",
-    "working":    "Working",
+    "working":    "AI Coder",
     "idle":       "Idle",
     "validate":   "Needs Validation",
     "task_error": "Task Error",
@@ -178,6 +178,9 @@ class AgentChatPanel(QWidget):
         super().__init__(parent)
         self._tid  = -1
         self._name = ""
+        self._font_pt = 12
+        self._last_messages: list = []
+        self._queued_count = 0
         self.setMinimumWidth(260)
         self.setStyleSheet(
             f"QWidget{{background:{_PANEL};}}"
@@ -202,6 +205,15 @@ class AgentChatPanel(QWidget):
         self._status_lbl.setStyleSheet(f"color:{_MUTED};font-size:11px;")
         hl.addWidget(self._title_lbl, 1)
         hl.addWidget(self._status_lbl)
+        _font_btn_ss = (f"QPushButton{{background:{_SURFACE};color:{_FG};border:none;"
+                        f"border-radius:3px;font-size:10px;padding:0 4px;}}"
+                        f"QPushButton:hover{{background:{_ACCENT}33;color:{_ACCENT};}}")
+        for _label, _fn in [("A−", self._dec_font), ("A+", self._inc_font)]:
+            _b = QPushButton(_label)
+            _b.setFixedSize(24, 22)
+            _b.setStyleSheet(_font_btn_ss)
+            _b.clicked.connect(_fn)
+            hl.addWidget(_b)
         lay.addWidget(hdr)
 
         # ── conversation log ──────────────────────────────────────────────────
@@ -258,14 +270,19 @@ class AgentChatPanel(QWidget):
         self._status_lbl.setText(f"<html>{dot} {label}</html>")
 
         is_busy = status in ("working", "thinking")
-        self._active_lbl.setVisible(is_busy)
-        if is_busy:
-            self._active_lbl.setText(
-                "Working…" if status == "working" else "Thinking…")
+        self._active_lbl.setVisible(is_busy or self._queued_count > 0)
+        if is_busy or self._queued_count > 0:
+            base = "Working…" if status == "working" else (
+                "Thinking…" if is_busy else "Idle")
+            qsuffix = f" · {self._queued_count} queued" if self._queued_count else ""
+            self._active_lbl.setText(base + qsuffix)
 
-        self._inp.setEnabled(not is_busy)
-        self._send_btn.setEnabled(not is_busy)
+        self._inp.setEnabled(True)
+        self._send_btn.setEnabled(True)
         self._render(messages)
+
+    def set_queued_count(self, n: int):
+        self._queued_count = n
 
     def focus_input(self):
         self._inp.setFocus()
@@ -278,10 +295,23 @@ class AgentChatPanel(QWidget):
             return ""
         return time.strftime("%H:%M:%S", time.localtime(ts))
 
+    def _inc_font(self):
+        if self._font_pt < 22:
+            self._font_pt += 1
+            self._render(self._last_messages)
+
+    def _dec_font(self):
+        if self._font_pt > 8:
+            self._font_pt -= 1
+            self._render(self._last_messages)
+
     def _render(self, messages: list):
+        self._last_messages = messages
         ff = "Menlo,Consolas,monospace"
-        ts_ss = f"color:{_MUTED};font-size:9px;font-family:{ff};margin-top:1px;"
-        parts = [f'<div style="font-family:{ff};font-size:12px;padding:4px 6px;">']
+        fp = self._font_pt
+        ts_ss = (f"color:{_MUTED};font-size:{max(8, fp - 3)}px;"
+                 f"font-family:{ff};margin-top:1px;")
+        parts = [f'<div style="font-family:{ff};font-size:{fp}px;padding:4px 6px;">']
         for m in messages:
             role = m.get("role", "")
             text = _html.escape(m.get("text", "")).replace("\n", "<br>")
@@ -294,15 +324,27 @@ class AgentChatPanel(QWidget):
                     f'display:inline-block;max-width:88%;">{text}</span>'
                     f'<div style="text-align:right;{ts_ss}">{tstr}</div></div>')
             elif role == "agent":
-                cursor = (f' <span style="color:{_ACCENT};">▍</span>'
-                          if m.get("streaming") else "")
-                label = "streaming…" if m.get("streaming") else tstr
+                streaming = m.get("streaming")
+                if streaming:
+                    cursor = (f' <span style="color:{_GREEN};background:{_GREEN}55;'
+                              f'padding:0 3px;font-weight:bold;">▍</span>')
+                    bubble_style = (
+                        f"background:{_GREEN}22;color:{_FG};"
+                        f"border-left:4px solid {_GREEN};"
+                        f"padding:6px 11px;border-radius:8px;"
+                        f"display:inline-block;max-width:88%;")
+                    label_html = (f'<span style="color:{_GREEN};font-weight:bold;">'
+                                  f'⚡ streaming</span>')
+                else:
+                    cursor = ""
+                    bubble_style = (f"background:{_SURFACE};color:{_FG};"
+                                    f"padding:5px 10px;border-radius:8px;"
+                                    f"display:inline-block;max-width:88%;")
+                    label_html = tstr
                 parts.append(
                     f'<div style="text-align:left;margin:5px 0;">'
-                    f'<span style="background:{_SURFACE};color:{_FG};'
-                    f'padding:5px 10px;border-radius:8px;'
-                    f'display:inline-block;max-width:88%;">{text}{cursor}</span>'
-                    f'<div style="text-align:left;{ts_ss}">{label}</div></div>')
+                    f'<span style="{bubble_style}">{text}{cursor}</span>'
+                    f'<div style="text-align:left;{ts_ss}">{label_html}</div></div>')
             elif role == "error":
                 parts.append(
                     f'<div style="text-align:left;margin:5px 0;">'
@@ -313,6 +355,14 @@ class AgentChatPanel(QWidget):
                     f'<span style="color:{_RED};font-weight:bold;">⚠ Error</span><br>{text}'
                     f'</div>'
                     f'<div style="text-align:left;{ts_ss}">{tstr}</div></div>')
+            elif role == "queued":
+                parts.append(
+                    f'<div style="text-align:right;margin:5px 0;">'
+                    f'<span style="background:{_PANEL};color:{_MUTED};'
+                    f'border:1px dashed {_MUTED};'
+                    f'padding:4px 9px;border-radius:8px;'
+                    f'display:inline-block;max-width:88%;font-style:italic;">⏳ {text}</span>'
+                    f'<div style="text-align:right;{ts_ss}">{tstr}</div></div>')
             elif role == "status":
                 parts.append(
                     f'<div style="text-align:center;margin:3px 0;'
@@ -360,6 +410,9 @@ class AgentTable(QWidget):
         self._conversations: Dict[int, list] = {}
         self._agent_last_waiting_at: Dict[int, float] = {}
         self._agent_last_stream_seq: Dict[int, int] = {}
+        self._task_queue: Dict[int, list] = {}     # tid → [task strings waiting to dispatch]
+        self._stream_active: Dict[int, bool] = {}  # last-known stream_active per tid
+        self._group_by: str = "none"               # "none" | "status" | "tags"
         self._build()
 
     # ── Build ──────────────────────────────────────────────────────────────────
@@ -408,6 +461,20 @@ class AgentTable(QWidget):
         self._search_inp.textChanged.connect(self._on_search)
         bl.addWidget(self._search_inp)
 
+        # Group-by toggle
+        grp_lbl = QLabel("Group:")
+        grp_lbl.setStyleSheet(f"color:{_MUTED};font-size:11px;background:transparent;")
+        bl.addWidget(grp_lbl)
+        self._group_btns = {}
+        for _key, _label in [("none", "None"), ("status", "Status"), ("tags", "Tags")]:
+            _b = QPushButton(_label)
+            _b.setCheckable(True)
+            _b.setChecked(_key == self._group_by)
+            _b.setStyleSheet(self._tag_btn_ss(_key == self._group_by))
+            _b.clicked.connect(lambda _ck, k=_key: self._set_group(k))
+            self._group_btns[_key] = _b
+            bl.addWidget(_b)
+
         add_btn = QPushButton("+ Agent")
         add_btn.setStyleSheet(_BTN_SS)
         add_btn.setToolTip("Add a new agent terminal")
@@ -422,17 +489,8 @@ class AgentTable(QWidget):
             ["●", "Name", "Status", "Last Active", "Tags", "Dir", "Command",
              "Model", "Tokens", "Account", "Actions"])
         h = self._tbl.horizontalHeader()
-        h.setSectionResizeMode(_COL_DOT,     QHeaderView.ResizeMode.Fixed)
-        h.setSectionResizeMode(_COL_NAME,    QHeaderView.ResizeMode.Interactive)
-        h.setSectionResizeMode(_COL_STATUS,  QHeaderView.ResizeMode.Fixed)
-        h.setSectionResizeMode(_COL_ACTIVE,  QHeaderView.ResizeMode.Fixed)
-        h.setSectionResizeMode(_COL_TAGS,    QHeaderView.ResizeMode.Interactive)
-        h.setSectionResizeMode(_COL_DIR,     QHeaderView.ResizeMode.Stretch)
-        h.setSectionResizeMode(_COL_CMD,     QHeaderView.ResizeMode.Interactive)
-        h.setSectionResizeMode(_COL_MODEL,   QHeaderView.ResizeMode.Fixed)
-        h.setSectionResizeMode(_COL_TOKENS,  QHeaderView.ResizeMode.Fixed)
-        h.setSectionResizeMode(_COL_ACCT,    QHeaderView.ResizeMode.Fixed)
-        h.setSectionResizeMode(_COL_ACTIONS, QHeaderView.ResizeMode.Fixed)
+        for _c in range(_N_COLS):
+            h.setSectionResizeMode(_c, QHeaderView.ResizeMode.Interactive)
         self._tbl.setColumnWidth(_COL_DOT,     28)
         self._tbl.setColumnWidth(_COL_NAME,    150)
         self._tbl.setColumnWidth(_COL_STATUS,  110)
@@ -547,6 +605,51 @@ class AgentTable(QWidget):
         self._search = text.lower()
         self._repopulate()
 
+    def _set_group(self, key: str):
+        self._group_by = key
+        for k, b in self._group_btns.items():
+            b.setChecked(k == key)
+            b.setStyleSheet(self._tag_btn_ss(k == key))
+        self._repopulate()
+
+    def _grouped_rows(self, sessions: list) -> list:
+        """Return a flat list of items: dicts for sessions, ('group', label) for headers."""
+        if self._group_by == "none":
+            return sessions
+        if self._group_by == "status":
+            buckets: Dict[str, list] = {}
+            for s in sessions:
+                if s.get("task_result"):
+                    key = "Task Error"
+                elif s.get("pending_validation"):
+                    key = "Needs Validation"
+                else:
+                    key = _STATUS_LABEL.get(s.get("status", "idle"), "Idle")
+                buckets.setdefault(key, []).append(s)
+            out: list = []
+            for label in ["Pending Answer", "AI Coder", "Thinking",
+                          "Needs Validation", "Task Error", "Idle"]:
+                if label in buckets:
+                    out.append(("group", label, len(buckets[label])))
+                    out.extend(buckets[label])
+                    del buckets[label]
+            for label, rows in buckets.items():  # any other status
+                out.append(("group", label, len(rows)))
+                out.extend(rows)
+            return out
+        if self._group_by == "tags":
+            buckets: Dict[str, list] = {}
+            for s in sessions:
+                tags = s.get("tags", []) or ["(untagged)"]
+                for t in tags:
+                    buckets.setdefault(t, []).append(s)
+            out = []
+            for label in sorted(buckets):
+                out.append(("group", label, len(buckets[label])))
+                out.extend(buckets[label])
+            return out
+        return sessions
+
     # ── Table population ───────────────────────────────────────────────────────
 
     def _filtered(self) -> List[dict]:
@@ -570,9 +673,28 @@ class AgentTable(QWidget):
 
     def _repopulate(self):
         sessions = self._filtered()
+        rows = self._grouped_rows(sessions)
         self._tbl.setSortingEnabled(False)
-        self._tbl.setRowCount(len(sessions))
-        for row, s in enumerate(sessions):
+        self._tbl.setRowCount(len(rows))
+        for row, item in enumerate(rows):
+            if isinstance(item, tuple) and item[0] == "group":
+                _, label, count = item
+                hdr = _SortableItem(f"  ▸ {label}  ({count})")
+                hdr.setForeground(QBrush(QColor(_ACCENT)))
+                hdr.setBackground(QBrush(QColor(_PANEL)))
+                hdr.setFlags(Qt.ItemFlag.ItemIsEnabled)  # not selectable
+                hdr.setData(Qt.ItemDataRole.UserRole, -1)
+                font = hdr.font(); font.setBold(True); hdr.setFont(font)
+                self._tbl.setItem(row, _COL_DOT, hdr)
+                # Span this row across all columns
+                self._tbl.setSpan(row, 0, 1, _N_COLS)
+                # Clear any cell widget from a previous repopulate
+                self._tbl.removeCellWidget(row, _COL_ACTIONS)
+                continue
+            else:
+                # In case the previous render left a span on this row, undo it.
+                self._tbl.setSpan(row, 0, 1, 1)
+            s = item
             tid         = s.get("tid", -1)
             task_result = s.get("task_result", "")
             if task_result:
@@ -608,10 +730,17 @@ class AgentTable(QWidget):
             if sid:
                 cmd_item.setToolTip(f"Session: {sid}")
             neural = s.get("neural_on_bus", False)
-            name_str = ("⬡ " if neural else "") + s.get("name", f"Agent {tid}")
+            qcount = len(self._task_queue.get(tid, []))
+            badge  = f"  ⏳{qcount}" if qcount else ""
+            name_str = ("⬡ " if neural else "") + s.get("name", f"Agent {tid}") + badge
             name_item = _item(name_str)
+            tooltip_parts = []
             if neural:
-                name_item.setToolTip("Connected to Neural Brain")
+                tooltip_parts.append("Connected to Neural Brain")
+            if qcount:
+                tooltip_parts.append(f"{qcount} task(s) queued")
+            if tooltip_parts:
+                name_item.setToolTip(" · ".join(tooltip_parts))
             status_item = _item(label, _STATUS_SORT.get(status, 99))
             if task_result:
                 status_item.setToolTip(task_result)
@@ -640,7 +769,8 @@ class AgentTable(QWidget):
                 item = self._tbl.item(row, col)
                 if item:
                     item.setBackground(QBrush(bg))
-        self._tbl.setSortingEnabled(True)
+        # Re-enable header click-sort only when there are no group rows to scramble.
+        self._tbl.setSortingEnabled(self._group_by == "none")
 
     def _tid_at_row(self, row: int) -> int:
         item = self._tbl.item(row, _COL_DOT)
@@ -651,7 +781,7 @@ class AgentTable(QWidget):
             return
         tid = self._tid_at_row(index.row())
         if tid >= 0:
-            self.open_terminal.emit(tid)
+            self.open_detail.emit(tid)
 
     def _on_selection_changed(self):
         rows = self._tbl.selectionModel().selectedRows()
@@ -671,6 +801,7 @@ class AgentTable(QWidget):
             status = "validate"
         else:
             status = s.get("status", "idle")
+        self._chat_panel.set_queued_count(len(self._task_queue.get(tid, [])))
         self._chat_panel.set_agent(
             tid, s.get("name", f"Agent {tid}"), status,
             self._conversations.get(tid, []))
@@ -729,6 +860,14 @@ class AgentTable(QWidget):
             stream_text   = s.get("stream_text", "")
             task_result   = s.get("task_result", "")
             prev_seq      = self._agent_last_stream_seq.get(tid, 0)
+            prev_active   = self._stream_active.get(tid, False)
+            self._stream_active[tid] = stream_active
+
+            # Drain queued tasks when the active stream just finished
+            if prev_active and not stream_active and self._task_queue.get(tid):
+                next_task = self._task_queue[tid].pop(0)
+                self.run_task.emit(tid, next_task)
+                changed_tids.add(tid)
 
             if stream_seq != prev_seq:
                 self._agent_last_stream_seq[tid] = stream_seq
@@ -796,6 +935,7 @@ class AgentTable(QWidget):
                     status = "validate"
                 else:
                     status = s.get("status", "idle")
+                self._chat_panel.set_queued_count(len(self._task_queue.get(tid, [])))
                 self._chat_panel.set_agent(
                     tid, s.get("name", f"Agent {tid}"), status,
                     self._conversations.get(tid, []))
@@ -808,11 +948,20 @@ class AgentTable(QWidget):
 
     def _on_panel_task(self, tid: int, text: str):
         self._add_message(tid, "user", text)
-        self.run_task.emit(tid, text)
         s = next((x for x in self._sessions if x.get("tid") == tid), None)
+        busy = bool(s and (s.get("stream_active") or
+                           s.get("status") in ("working", "thinking")))
+        if busy:
+            self._task_queue.setdefault(tid, []).append(text)
+            self._add_message(tid, "queued",
+                              f"Queued — will run after current task ({len(self._task_queue[tid])} ahead)")
+        else:
+            self.run_task.emit(tid, text)
         if s and self._selected_tid == tid:
+            self._chat_panel.set_queued_count(len(self._task_queue.get(tid, [])))
             self._chat_panel.set_agent(
-                tid, s.get("name", f"Agent {tid}"), "working",
+                tid, s.get("name", f"Agent {tid}"),
+                "working" if busy else "working",
                 self._conversations.get(tid, []))
 
     # ── Dialogs ────────────────────────────────────────────────────────────────

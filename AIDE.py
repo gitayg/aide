@@ -117,7 +117,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "4.6.1"
+VERSION      = "4.7.1"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -477,6 +477,19 @@ class NeuralRailOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "4.7.1": [
+        ("📚", "Group by status / tags", "Toolbar 'Group:' toggle (None / Status / Tags) inserts header rows that span the table. Sorting is disabled while grouping is active so groups stay coherent."),
+        ("🔍", "Verbose error events for debugging", "Stream-json error results now also check `error`, `message`, and `error_message` fields. The full raw event JSON (truncated to 1500 chars) is appended to the error bubble — you can see exactly what claude returned when a task fails with no message."),
+    ],
+    "4.7.0": [
+        ("📋", "Full agent editor in the dashboard dialog", "Double-clicking an agent now opens a complete editor: title, tags, autostart dir/cmd, browser URL, watching, notes, tasks, Claude profile/model/args, GitHub token + project, auto git pull, and per-agent tool permissions — every sidebar field in one scrollable dialog."),
+        ("📐", "All columns resizable", "Every column in the dashboard table can now be drag-resized — no more fixed-width columns."),
+        ("🅰", "Font size controls in chat panel", "A− and A+ buttons in the chat panel header step the conversation font from 8pt to 22pt."),
+        ("📨", "Queue tasks while agent is busy", "Send a new task while the agent is still working — it gets queued and dispatched when the current run finishes. Pending bubbles show in the chat with a queue counter."),
+        ("⏳", "Task-count badge in table", "Agents with queued tasks show '⏳N' next to their name."),
+        ("🤖", "Working status renamed to 'AI Coder'", "The 'Working' status label is now 'AI Coder' (still green) — clearer that it's the AI doing work."),
+        ("⚡", "Streaming bubble more visible", "Streaming agent responses now render with a green-highlighted bubble, accent border, and pulsing block cursor — easy to spot at a glance."),
+    ],
     "4.6.1": [
         ("🖱", "Dashboard clicks no longer eaten", "Table refresh dropped from 4 Hz back to 1 Hz — the cell-widget churn was making clicks land on widgets being torn down. Streaming runs at 4 Hz on a separate panel-only refresh that doesn't touch the table."),
         ("🆔", "Resume parameter now captured from JSON", "Stream-json events carry `session_id` directly — we read it from `system/init` and `result` events instead of scraping it from the human-readable terminal text (which doesn't appear in -p mode). Subsequent task dispatches now correctly use --resume <id>."),
@@ -1615,7 +1628,10 @@ class TermSession:
                 self.tokens_used += inp + out
             if ev.get("is_error"):
                 subtype     = ev.get("subtype", "error")
-                err_text    = ev.get("result") or final_text or "(no error message)"
+                # Look in every plausible field for an error message
+                err_text = (ev.get("result") or ev.get("error") or
+                            ev.get("message") or ev.get("error_message") or
+                            final_text or "(no error message)")
                 duration_ms = ev.get("duration_ms", 0)
                 cost        = ev.get("total_cost_usd", 0) or 0
                 num_turns   = ev.get("num_turns", 0)
@@ -1626,6 +1642,14 @@ class TermSession:
                 ]
                 if sid:
                     lines.append(f"session: {sid}")
+                # Dump the full event JSON for debugging — shows any extra fields
+                try:
+                    raw = json.dumps(ev, indent=2)
+                    if len(raw) > 1500:
+                        raw = raw[:1500] + "\n…(truncated)"
+                    lines.append(f"\nfull event:\n{raw}")
+                except Exception:
+                    pass
                 self.task_result = "\n".join(lines)
             else:
                 self.task_result = ""
@@ -4869,66 +4893,202 @@ class _RestoreDialog(QDialog):
 
 
 class AgentEditDialog(QDialog):
-    """Quick notes/tasks editor for an agent — opened by double-clicking the dashboard table."""
+    """Full agent editor — every NotesPanel sidebar field, in one scrollable dialog."""
 
     def __init__(self, s: "TermSession", parent=None):
         super().__init__(parent)
         self._s = s
-        name = s.effective_title()
-        self.setWindowTitle(name)
-        self.setFixedWidth(540)
+        self.setWindowTitle(s.effective_title())
+        self.resize(620, 760)
         self.setStyleSheet(
             f"QDialog{{background:{C_BG.name()};color:{C_FG.name()};}}"
-            f"QLabel{{background:transparent;}}")
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(16, 14, 16, 14)
-        lay.setSpacing(8)
+            f"QLabel{{background:transparent;color:{C_FG.name()};}}"
+            f"QLineEdit,QTextEdit{{background:{C_SURFACE.name()};color:{C_FG.name()};"
+            f"border:1px solid {C_SURFACE.name()};border-radius:4px;padding:4px;"
+            f"font-family:{FONT_FAMILY};font-size:12px;}}"
+            f"QCheckBox{{color:{C_FG.name()};background:transparent;}}")
 
-        hdr = QLabel(name)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(14, 12, 14, 12)
+        root.setSpacing(10)
+
+        hdr = QLabel(s.effective_title())
         hdr.setStyleSheet(f"color:{C_ACCENT.name()};font-size:14px;font-weight:bold;")
-        lay.addWidget(hdr)
+        root.addWidget(hdr)
 
-        _lbl_ss = f"color:{C_MUTED.name()};font-size:11px;"
-        _edit_ss = (f"QTextEdit{{background:{C_SURFACE.name()};color:{C_FG.name()};"
-                    f"border:1px solid {C_SURFACE.name()};border-radius:4px;"
-                    f"font-family:{FONT_FAMILY};font-size:12px;padding:4px;}}")
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("QScrollArea{border:none;background:transparent;}")
+        body = QWidget(); body.setStyleSheet("background:transparent;")
+        bl = QVBoxLayout(body)
+        bl.setContentsMargins(0, 0, 0, 0); bl.setSpacing(14)
 
-        lay.addWidget(QLabel("Notes:", styleSheet=_lbl_ss))
-        self._notes = QTextEdit(s.notes)
-        self._notes.setFixedHeight(130)
-        self._notes.setStyleSheet(_edit_ss)
-        lay.addWidget(self._notes)
+        _hdr_ss = (f"color:{C_ACCENT.name()};font-size:11px;font-weight:bold;"
+                   f"letter-spacing:1px;margin-top:4px;")
 
-        lay.addWidget(QLabel("Tasks:", styleSheet=_lbl_ss))
-        self._tasks = QTextEdit(s.tasks)
-        self._tasks.setFixedHeight(130)
-        self._tasks.setStyleSheet(_edit_ss)
-        lay.addWidget(self._tasks)
+        def _section(title: str) -> QVBoxLayout:
+            grp = QVBoxLayout(); grp.setSpacing(4)
+            lbl = QLabel(title.upper()); lbl.setStyleSheet(_hdr_ss)
+            grp.addWidget(lbl)
+            return grp
 
+        # ── Identity ────────────────────────────────
+        sec = _section("Identity")
+        f1 = QFormLayout(); f1.setSpacing(4)
+        self._title_inp = QLineEdit(s.custom_title)
+        self._tags_inp = QLineEdit(", ".join(s.tags))
+        self._tags_inp.setPlaceholderText("comma-separated")
+        f1.addRow("Title:", self._title_inp)
+        f1.addRow("Tags:", self._tags_inp)
+        sec.addLayout(f1); bl.addLayout(sec)
+
+        # ── Working dir & startup ───────────────────
+        sec = _section("Working Directory & Startup")
+        f2 = QFormLayout(); f2.setSpacing(4)
+        self._dir_inp   = QLineEdit(s.autostart_dir)
+        self._cmd_inp   = QLineEdit(s.autostart_cmd)
+        self._url_inp   = QLineEdit(s.browser_url)
+        self._watch_cb  = QCheckBox("Watch this terminal")
+        self._watch_cb.setChecked(s.watching)
+        f2.addRow("Autostart dir:", self._dir_inp)
+        f2.addRow("Autostart cmd:", self._cmd_inp)
+        f2.addRow("Browser URL:",   self._url_inp)
+        f2.addRow("",               self._watch_cb)
+        sec.addLayout(f2); bl.addLayout(sec)
+
+        # ── Notes ────────────────────────────────────
+        sec = _section("Notes")
+        self._notes = QTextEdit(s.notes); self._notes.setFixedHeight(110)
+        sec.addWidget(self._notes); bl.addLayout(sec)
+
+        # ── Tasks ────────────────────────────────────
+        sec = _section("Tasks")
+        self._tasks = QTextEdit(s.tasks); self._tasks.setFixedHeight(110)
+        sec.addWidget(self._tasks); bl.addLayout(sec)
+
+        # ── Claude config ───────────────────────────
+        sec = _section("Claude Config")
+        f3 = QFormLayout(); f3.setSpacing(4)
+        self._profile_inp = QLineEdit(s.claude_profile)
+        self._model_inp   = QLineEdit(s.claude_model)
+        self._args_inp    = QLineEdit(s.claude_args)
+        f3.addRow("Profile:",    self._profile_inp)
+        f3.addRow("Model:",      self._model_inp)
+        f3.addRow("Extra args:", self._args_inp)
+        sec.addLayout(f3); bl.addLayout(sec)
+
+        # ── GitHub ──────────────────────────────────
+        sec = _section("GitHub")
+        f4 = QFormLayout(); f4.setSpacing(4)
+        self._gh_token_inp = QLineEdit(s.github_token_name)
+        self._gh_proj_inp  = QLineEdit(s.github_project)
+        self._git_pull_cb  = QCheckBox("Auto git pull before each task")
+        self._git_pull_cb.setChecked(s.auto_git_pull)
+        f4.addRow("Token name:",          self._gh_token_inp)
+        f4.addRow("Project (owner/repo):", self._gh_proj_inp)
+        f4.addRow("",                      self._git_pull_cb)
+        sec.addLayout(f4); bl.addLayout(sec)
+
+        # ── Permissions ─────────────────────────────
+        sec = _section("Tool Permissions  (.claude/settings.local.json)")
+        self._perms = QTextEdit(); self._perms.setFixedHeight(110)
+        self._perms.setPlaceholderText("One allow rule per line — e.g. Bash(npm:*)")
+        self._load_permissions()
+        sec.addWidget(self._perms); bl.addLayout(sec)
+
+        # ── Variables (read-only summary) ───────────
+        sec = _section("Variables (encrypted)")
+        var_lbl = QLabel(self._var_summary())
+        var_lbl.setStyleSheet(f"color:{C_MUTED.name()};font-size:11px;font-style:italic;")
+        var_lbl.setWordWrap(True)
+        sec.addWidget(var_lbl); bl.addLayout(sec)
+
+        bl.addStretch()
+        scroll.setWidget(body)
+        root.addWidget(scroll, 1)
+
+        # ── Buttons ─────────────────────────────────
         _btn_ss = (f"QPushButton{{background:{C_SURFACE.name()};color:{C_FG.name()};"
-                   f"border:none;border-radius:4px;font-size:12px;padding:5px 14px;}}"
+                   f"border:none;border-radius:4px;font-size:12px;padding:6px 14px;}}"
                    f"QPushButton:hover{{background:{C_ACCENT.name()}44;color:{C_ACCENT.name()};}}")
-
-        btn_bar = QHBoxLayout()
-        btn_bar.setSpacing(8)
+        btn_bar = QHBoxLayout(); btn_bar.setSpacing(8)
         close_btn = QPushButton("Close")
         close_btn.setStyleSheet(_btn_ss)
-        close_btn.clicked.connect(lambda: (self._save(), self.reject()))
+        close_btn.clicked.connect(self.reject)
         save_btn = QPushButton("Save")
         save_btn.setStyleSheet(_btn_ss)
         save_btn.clicked.connect(self._save)
-        open_btn = QPushButton("Open Terminal →")
+        open_btn = QPushButton("Save & Open Terminal →")
         open_btn.setStyleSheet(_btn_ss)
         open_btn.clicked.connect(lambda: (self._save(), self.accept()))
         btn_bar.addStretch()
         btn_bar.addWidget(close_btn)
         btn_bar.addWidget(save_btn)
         btn_bar.addWidget(open_btn)
-        lay.addLayout(btn_bar)
+        root.addLayout(btn_bar)
+
+    def _var_summary(self) -> str:
+        v = getattr(self._s, "variables", {}) or {}
+        if not v:
+            return ("No variables set. Use the sidebar (🔓 Variables section) "
+                    "to unlock the vault and add encrypted entries.")
+        names = ", ".join(sorted(v.keys()))
+        return (f"{len(v)} variable(s) loaded: {names}\n"
+                "(use the sidebar to edit — vault state lives there)")
+
+    def _perm_path(self) -> Optional[Path]:
+        d = (self._s.autostart_dir or "").strip()
+        if not d:
+            return None
+        return Path(d).expanduser() / ".claude" / "settings.local.json"
+
+    def _load_permissions(self):
+        p = self._perm_path()
+        if not p or not p.exists():
+            self._perms.setPlainText("")
+            return
+        try:
+            data = json.loads(p.read_text())
+            rules = data.get("permissions", {}).get("allow", [])
+            self._perms.setPlainText("\n".join(rules))
+        except Exception:
+            self._perms.setPlainText("")
+
+    def _save_permissions(self):
+        p = self._perm_path()
+        if not p:
+            return
+        rules = [r.strip() for r in self._perms.toPlainText().splitlines() if r.strip()]
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            existing = json.loads(p.read_text()) if p.exists() else {}
+        except Exception:
+            existing = {}
+        perms = existing.setdefault("permissions", {})
+        perms["allow"] = rules
+        try:
+            p.write_text(json.dumps(existing, indent=2))
+        except Exception:
+            pass
 
     def _save(self):
-        self._s.notes = self._notes.toPlainText()
-        self._s.tasks = self._tasks.toPlainText()
+        s = self._s
+        s.custom_title     = self._title_inp.text().strip()
+        tstr               = self._tags_inp.text().strip()
+        s.tags             = [t.strip() for t in tstr.split(",") if t.strip()] if tstr else []
+        s.autostart_dir    = self._dir_inp.text().strip()
+        s.autostart_cmd    = self._cmd_inp.text().strip()
+        s.browser_url      = self._url_inp.text().strip()
+        s.watching         = self._watch_cb.isChecked()
+        s.notes            = self._notes.toPlainText()
+        s.tasks            = self._tasks.toPlainText()
+        s.claude_profile   = self._profile_inp.text().strip()
+        s.claude_model     = self._model_inp.text().strip()
+        s.claude_args      = self._args_inp.text().strip()
+        s.github_token_name= self._gh_token_inp.text().strip()
+        s.github_project   = self._gh_proj_inp.text().strip()
+        s.auto_git_pull    = self._git_pull_cb.isChecked()
+        self._save_permissions()
 
 
 class AIDEWindow(QMainWindow):
