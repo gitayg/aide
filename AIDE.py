@@ -117,7 +117,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "4.7.1"
+VERSION      = "4.8.0"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -477,6 +477,12 @@ class NeuralRailOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "4.8.0": [
+        ("🧹", "Dashboard-first UX", "Left sidebar (terminal cards), right notes panel, Split button, SideBar button, and Uber mode all removed from the toolbar/layout. The dashboard is now the primary view; double-click an agent to edit settings, or click ◀ Dashboard from a terminal."),
+        ("🔄", "Dialog Save auto-refreshes table", "Editing tags / title / status fields in the agent dialog now refreshes the table immediately on Save — no 1-second delay."),
+        ("💬", "Agent prompts surface in chat panel", "When an agent asks a [y/n] or other inline prompt, the question text (last 40 lines of clean output) lands in the chat panel instead of just a 'Waiting…' placeholder."),
+        ("🛡️", "MCP permission requests in chat panel", "Tool permission requests from claude (via MCP) now also appear as a 🛡️ message in the agent's chat panel with the tool name and arguments — modal dialog still opens for the actual decision."),
+    ],
     "4.7.1": [
         ("📚", "Group by status / tags", "Toolbar 'Group:' toggle (None / Status / Tags) inserts header rows that span the table. Sorting is disabled while grouping is active so groups stay coherent."),
         ("🔍", "Verbose error events for debugging", "Stream-json error results now also check `error`, `message`, and `error_message` fields. The full raw event JSON (truncated to 1500 chars) is appended to the error bubble — you can see exactly what claude returned when a task fails with no message."),
@@ -1590,6 +1596,15 @@ class TermSession:
             if pat.search(clean):
                 self.waiting_input=True; self.claude_working=False; self.claude_thinking=False
                 self.last_ping_time=time.time(); self.last_waiting_at=self.last_ping_time
+                # Capture the prompt context for the chat panel: prefer the response
+                # box buffer if we have one, otherwise tail of clean output (last 40 lines).
+                if self._response_buf.strip():
+                    self.last_agent_output = self._response_buf.strip()
+                    self._response_buf = ""
+                else:
+                    _tail_clean = _ANSI_RE.sub('', self._output_tail)
+                    _lines = [ln.rstrip() for ln in _tail_clean.splitlines() if ln.strip()]
+                    self.last_agent_output = "\n".join(_lines[-40:]).strip() or msg
                 if not was_waiting:
                     _EVENT_Q.put(("blink",self.tab_id,msg))
                     _EVENT_Q.put(("notif",self.tab_id,msg,self._output_tail))
@@ -3215,13 +3230,10 @@ class HotkeyBar(QWidget):
     _BUTTONS=[
         ("◀","Prev","prev_tab","Ctrl+Shift+Tab"),
         ("▶","Next","next_tab","Ctrl+Tab"),
-        ("⊟","Split","split_term","^B-|"),
         ("⊞","Dashboard","toggle_dashboard","^B-d"),
-        ("📝","SideBar","toggle_notes","^B-p"),
         ("🔑","API Keys","open_settings","^B-k"),
         ("🐙","GitHub","github_tokens","^B-g"),
         ("🔔","Notifs","configure_notifs","^B-s"),
-        ("🚀","Uber","toggle_uber","^B-u"),
     ]
 
     def __init__(self,parent=None):
@@ -4895,6 +4907,8 @@ class _RestoreDialog(QDialog):
 class AgentEditDialog(QDialog):
     """Full agent editor — every NotesPanel sidebar field, in one scrollable dialog."""
 
+    saved = pyqtSignal()
+
     def __init__(self, s: "TermSession", parent=None):
         super().__init__(parent)
         self._s = s
@@ -5089,6 +5103,7 @@ class AgentEditDialog(QDialog):
         s.github_project   = self._gh_proj_inp.text().strip()
         s.auto_git_pull    = self._git_pull_cb.isChecked()
         self._save_permissions()
+        self.saved.emit()
 
 
 class AIDEWindow(QMainWindow):
@@ -5127,7 +5142,6 @@ class AIDEWindow(QMainWindow):
         self._build_ui(); _build_keymap()
         self._start_dashboard()
         self._hotkey_bar.set_btn_active("toggle_notes", self._notes_vis)
-        self._hotkey_bar.set_btn_active("toggle_uber", self.config.uber_mode)
         self._hotkey_bar.set_btn_active("toggle_dashboard", True)
         for interval,fn in [(100,self._process_events),(1000,self._check_idle),
                              (500,self._refresh_cards),(1000,self._refresh_dashboard),
@@ -5204,6 +5218,7 @@ class AIDEWindow(QMainWindow):
         self._sidebar_splitter.setHandleWidth(3)
         self._sidebar_splitter.setStyleSheet(f"QSplitter::handle{{background:{C_SURFACE.name()};}}QSplitter::handle:hover{{background:{C_ACCENT.name()}44;}}")
         self._sidebar_splitter.addWidget(self._tab_bar)
+        self._tab_bar.hide()             # left sidebar (terminal cards) — replaced by dashboard
         ml.addWidget(self._sidebar_splitter, 1)
         term_area=QWidget(); term_area.setStyleSheet(f"background:{C_BG.name()};")
         tv=QVBoxLayout(term_area); tv.setContentsMargins(0,0,0,0); tv.setSpacing(0)
@@ -5326,6 +5341,7 @@ class AIDEWindow(QMainWindow):
         self._main_splitter.setStyleSheet(f"QSplitter::handle{{background:{C_SURFACE.name()};}}")
         self._main_splitter.addWidget(self._center_stack)
         self._main_splitter.addWidget(self._notes_panel)
+        self._notes_panel.hide()  # right sidebar (notes panel) — fields moved into agent dialog
         self._main_splitter.setStretchFactor(0,1); self._main_splitter.setStretchFactor(1,0)
         self._sidebar_splitter.addWidget(self._main_splitter)
         self._sidebar_splitter.setStretchFactor(0,0); self._sidebar_splitter.setStretchFactor(1,1)
@@ -5642,7 +5658,9 @@ class AIDEWindow(QMainWindow):
         if not s:
             return
         dlg = AgentEditDialog(s, self)
+        dlg.saved.connect(self._refresh_dashboard)
         result = dlg.exec()
+        self._refresh_dashboard()
         if result == QDialog.DialogCode.Accepted:
             self._dashboard_open_terminal(tid)
         if self.active_id == tid and self._focused_pane == 0:
@@ -5978,8 +5996,6 @@ class AIDEWindow(QMainWindow):
                 self._on_neural_delivered(ev[1], ev[2], ev[3])
             elif ev[0]=="blink":
                 QApplication.alert(self,3000)
-                if self.config.uber_mode:
-                    self._uber_focus(ev[1])
             elif ev[0]=="github_update" and not self._update_pending:
                 self._update_pending=True
                 remote_ver=ev[1]
@@ -6037,6 +6053,19 @@ class AIDEWindow(QMainWindow):
 
         tab_id, session = self._find_requesting_terminal()
         terminal_name = session.effective_title() if session else ""
+
+        # Surface the request in the agent's chat panel before the dialog opens —
+        # the user can see what tool was asked even after they answer the modal.
+        if session is not None:
+            try:
+                input_str = json.dumps(tool_input, indent=2)
+                if len(input_str) > 400:
+                    input_str = input_str[:400] + "\n…(truncated)"
+            except Exception:
+                input_str = repr(tool_input)
+            session.last_agent_output = (
+                f"🛡️ Permission request: {tool_name}\n{input_str}")
+            session.last_waiting_at = time.time()
 
         # Check always-allow rules before showing the dialog
         scopes = self._perm_always_allow.get(tool_name, set())
