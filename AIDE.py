@@ -117,7 +117,7 @@ GITHUB_RAW_URL = "https://raw.githubusercontent.com/gitayg/aide/main/AIDE.py"
 # CONSTANTS & THEME
 # ═════════════════════════════════════════════════════════════════════════════
 
-VERSION      = "4.3.1"
+VERSION      = "4.3.2"
 APP_NAME     = "AIDE"
 
 # ── Tab-switch ping pong sound ─────────────────────────────────────────────────
@@ -477,6 +477,9 @@ class NeuralRailOverlay(QWidget):
 # Release notes keyed by version string (semver, newest first).
 # Only entries for versions newer than the user's previous install are shown.
 WHATS_NEW: Dict[str, list] = {
+    "4.3.2": [
+        ("↕", "Sortable columns in agent table", "Click any column header to sort. Status and dot sort by priority (Validate → Waiting → Working → Idle); Last Active and Tokens sort numerically. Click again to reverse."),
+    ],
     "4.3.1": [
         ("🏷️", "Tag filter — single-select by default", "Clicking a tag filter chip now selects only that tag; hold Shift to add/remove additional tags for multi-select."),
     ],

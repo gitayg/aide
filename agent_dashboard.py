@@ -104,6 +104,22 @@ def _fmt_age(ts: float) -> str:
     return f"{int(age/86400)}d ago"
 
 
+_STATUS_SORT = {"validate": 0, "waiting": 1, "thinking": 2, "working": 3, "idle": 4}
+_SORT_ROLE   = Qt.ItemDataRole.UserRole + 1
+
+
+class _SortableItem(QTableWidgetItem):
+    def __lt__(self, other: QTableWidgetItem) -> bool:
+        a = self.data(_SORT_ROLE)
+        b = other.data(_SORT_ROLE)
+        if a is not None and b is not None:
+            try:
+                return a < b
+            except TypeError:
+                pass
+        return super().__lt__(other)
+
+
 class _ValidationDialog(QDialog):
     """Non-blocking dialog to set a pending-validation note."""
     note_accepted = pyqtSignal(str)
@@ -271,6 +287,8 @@ class AgentTable(QWidget):
         self._tbl.setColumnWidth(_COL_MODEL,  90)
         self._tbl.setColumnWidth(_COL_TOKENS, 80)
         self._tbl.setColumnWidth(_COL_ACCT,   80)
+        h.setSortIndicatorShown(True)
+        h.setSectionsClickable(True)
         self._tbl.verticalHeader().setVisible(False)
         self._tbl.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._tbl.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -386,6 +404,7 @@ class AgentTable(QWidget):
 
     def _repopulate(self):
         sessions = self._filtered()
+        self._tbl.setSortingEnabled(False)
         self._tbl.setRowCount(len(sessions))
         for row, s in enumerate(sessions):
             tid    = s.get("tid", -1)
@@ -393,34 +412,38 @@ class AgentTable(QWidget):
             color  = _STATUS_COLOR.get(status, _MUTED)
             label  = _STATUS_LABEL.get(status, status.capitalize())
 
-            def _item(text: str) -> QTableWidgetItem:
-                it = QTableWidgetItem(text)
+            def _item(text: str, sort_key=None) -> _SortableItem:
+                it = _SortableItem(text)
                 it.setTextAlignment(
                     Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
                 it.setData(Qt.ItemDataRole.UserRole, tid)
+                if sort_key is not None:
+                    it.setData(_SORT_ROLE, sort_key)
                 return it
 
-            dot = QTableWidgetItem("●")
+            dot = _SortableItem("●")
             dot.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             dot.setForeground(QBrush(QColor(color)))
             dot.setData(Qt.ItemDataRole.UserRole, tid)
+            dot.setData(_SORT_ROLE, _STATUS_SORT.get(status, 99))
             raw_model = s.get("model", "") or ""
             model_short = raw_model.split("-")[1] if raw_model and "-" in raw_model else (raw_model or "default")
             tokens = s.get("tokens_used", 0)
             tok_str = f"{tokens:,}" if tokens else "—"
+            ts = s.get("last_active", 0) or 0
             cmd_item = _item(s.get("cmd", ""))
             sid = s.get("session_id", "")
             if sid:
                 cmd_item.setToolTip(f"Session: {sid}")
             self._tbl.setItem(row, _COL_DOT,    dot)
             self._tbl.setItem(row, _COL_NAME,   _item(s.get("name", f"Agent {tid}")))
-            self._tbl.setItem(row, _COL_STATUS, _item(label))
-            self._tbl.setItem(row, _COL_ACTIVE, _item(_fmt_age(s.get("last_active", 0))))
+            self._tbl.setItem(row, _COL_STATUS, _item(label, _STATUS_SORT.get(status, 99)))
+            self._tbl.setItem(row, _COL_ACTIVE, _item(_fmt_age(ts), -ts))
             self._tbl.setItem(row, _COL_TAGS,   _item(", ".join(s.get("tags", []))))
             self._tbl.setItem(row, _COL_DIR,    _item(s.get("dir", "")))
             self._tbl.setItem(row, _COL_CMD,    cmd_item)
             self._tbl.setItem(row, _COL_MODEL,  _item(model_short))
-            self._tbl.setItem(row, _COL_TOKENS, _item(tok_str))
+            self._tbl.setItem(row, _COL_TOKENS, _item(tok_str, tokens))
             self._tbl.setItem(row, _COL_ACCT,   _item(s.get("profile", "") or "default"))
 
             if status == "validate":
@@ -435,6 +458,7 @@ class AgentTable(QWidget):
                 item = self._tbl.item(row, col)
                 if item:
                     item.setBackground(QBrush(bg))
+        self._tbl.setSortingEnabled(True)
 
     def _tid_at_row(self, row: int) -> int:
         item = self._tbl.item(row, _COL_DOT)
